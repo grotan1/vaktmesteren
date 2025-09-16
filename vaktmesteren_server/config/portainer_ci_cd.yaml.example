@@ -1,0 +1,9 @@
+## Portainer CI/CD credentials example
+# Copy this file to `config/portainer_ci_cd.yaml` and fill in the real values.
+# DO NOT commit `config/portainer_ci_cd.yaml` to version control.
+
+portainer:
+  url: "https://portainer.example.com"
+  endpoint_id: 1
+  token: "REPLACE_WITH_TOKEN"
+  user: "ci_cd"

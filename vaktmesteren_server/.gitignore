@@ -16,3 +16,6 @@ config/icinga2.yaml
 
 # Firebase service account key for Firebase auth
 config/firebase_service_account_key.json
+ 
+# Portainer CI/CD credentials (local file)
+config/portainer_ci_cd.yaml
