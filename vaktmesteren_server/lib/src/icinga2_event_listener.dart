@@ -194,10 +194,18 @@ class Icinga2EventListener {
 
             // Only alert if state has changed AND it's a HARD state (not SOFT)
             final isHardState = stateType == 1;
+
+            // Check if service is in downtime or acknowledged
+            final isInDowntime = (service['attrs']['downtime_depth'] ?? 0) > 0;
+            final isAcknowledged = service['attrs']['acknowledgement'] ?? false;
+
+            // Don't alert if in downtime or acknowledged
+            final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
+
             if ((previousState == null || previousState != state) &&
-                isHardState) {
+                shouldAlert) {
               if (state == 2) {
-                // CRITICAL - Hard state only
+                // CRITICAL - Hard state only, not in downtime/acknowledged
                 session.log(
                     '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.error);
@@ -205,20 +213,39 @@ class Icinga2EventListener {
                     '🚨 🚨 🚨 POLLED ALERT: Service $serviceName on integrasjoner is CRITICAL! 🚨 🚨 🚨');
                 print('   Details: ${lastCheckResult?['output'] ?? 'Unknown'}');
               } else if (state == 1) {
-                // WARNING - Hard state only
+                // WARNING - Hard state only, not in downtime/acknowledged
                 session.log(
                     '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.warning);
                 print(
                     '⚠️ POLLED WARNING: Service $serviceName on integrasjoner - ${lastCheckResult?['output'] ?? 'Unknown'}');
               } else if (state == 0 && previousState != null) {
-                // OK - Hard state recovery
+                // OK - Hard state recovery (always alert recoveries)
                 session.log(
                     '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
                     level: LogLevel.info);
                 print(
                     '✅ ✅ ✅ POLLED RECOVERY: Service $serviceName on integrasjoner is back OK! ✅ ✅ ✅');
               }
+            } else if ((previousState == null || previousState != state) &&
+                (isInDowntime || isAcknowledged)) {
+              // Log suppressed alerts due to downtime/acknowledgement
+              final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
+              final stateNames = {
+                0: 'OK',
+                1: 'WARNING',
+                2: 'CRITICAL',
+                3: 'UNKNOWN'
+              };
+              final stateTypeNames = {0: 'SOFT', 1: 'HARD'};
+              final stateName = stateNames[state] ?? 'UNKNOWN';
+              final stateTypeName = stateTypeNames[stateType] ?? 'UNKNOWN';
+
+              session.log(
+                  'POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
+                  level: LogLevel.info);
+              print(
+                  '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName');
             } else if (previousState == null || previousState != state) {
               // Log soft state changes without alerting
               final stateNames = {
@@ -547,14 +574,21 @@ class Icinga2EventListener {
         event.checkResult['state_type'] ?? (exitCode == 2 ? 1 : 0);
     final isHardState = stateType == 1;
 
+    // Check if service is in downtime or acknowledged
+    final isInDowntime = (event.checkResult['downtime_depth'] ?? 0) > 0;
+    final isAcknowledged = event.checkResult['acknowledgement'] ?? false;
+
+    // Don't alert if in downtime or acknowledged
+    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
+
     // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
-    if ((state == 'CRITICAL' || exitCode == 2) && isHardState) {
+    if ((state == 'CRITICAL' || exitCode == 2) && shouldAlert) {
       session.log('🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output',
           level: LogLevel.error);
       print(
           '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Send critical alert to duty officer
-    } else if ((state == 'WARNING' || exitCode == 1) && isHardState) {
+    } else if ((state == 'WARNING' || exitCode == 1) && shouldAlert) {
       session.log('⚠️ ALERT WARNING: ${event.host}/${event.service} - $output',
           level: LogLevel.warning);
       print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
@@ -564,11 +598,19 @@ class Icinga2EventListener {
           level: LogLevel.info);
       print(
           '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
-    } else if (state == 'CRITICAL' || exitCode == 2) {
+    } else if (isInDowntime || isAcknowledged) {
+      // Log suppressed alerts due to downtime/acknowledgement
+      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
+      session.log(
+          'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $output',
+          level: LogLevel.info);
+      print(
+          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $state');
+    } else if ((state == 'CRITICAL' || exitCode == 2) && !isHardState) {
       // Log soft critical states without alerting
       session.log('SOFT CRITICAL: ${event.host}/${event.service} - $output',
           level: LogLevel.warning);
-    } else if (state == 'WARNING' || exitCode == 1) {
+    } else if ((state == 'WARNING' || exitCode == 1) && !isHardState) {
       // Log soft warning states without alerting
       session.log('SOFT WARNING: ${event.host}/${event.service} - $output',
           level: LogLevel.info);
@@ -600,30 +642,45 @@ class Icinga2EventListener {
     // Only alert on HARD states (stateType == 1), not SOFT states (stateType == 0)
     final isHardState = event.stateType == 1;
 
+    // Check if service is in downtime or acknowledged
+    final isInDowntime = event.downtimeDepth > 0;
+    final isAcknowledged = event.acknowledgement;
+
+    // Don't alert if in downtime or acknowledged
+    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
+
     // Log state changes with appropriate severity - but only alert on hard states
-    if (event.state == 2 && isHardState) {
-      // CRITICAL - Hard state only
+    if (event.state == 2 && shouldAlert) {
+      // CRITICAL - Hard state only, not in downtime/acknowledged
       session.log(
           '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.error);
       print(
           '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Trigger critical alert escalation
-    } else if (event.state == 1 && isHardState) {
-      // WARNING - Hard state only
+    } else if (event.state == 1 && shouldAlert) {
+      // WARNING - Hard state only, not in downtime/acknowledged
       session.log(
           '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.warning);
       print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
       // TODO: Send warning notification
     } else if (event.state == 0 && isHardState) {
-      // OK - Hard state recovery
+      // OK - Hard state recovery (always alert recoveries)
       session.log(
           '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
           level: LogLevel.info);
       print(
           '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
       // TODO: Clear active alerts
+    } else if (isInDowntime || isAcknowledged) {
+      // Log suppressed alerts due to downtime/acknowledgement
+      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
+      session.log(
+          'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          level: LogLevel.info);
+      print(
+          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName');
     } else {
       // Log soft states or unknown states without alerting
       session.log(
@@ -647,6 +704,13 @@ class Icinga2EventListener {
         1; // Default to hard if not specified
     final isHardState = stateType == 1;
 
+    // Check if service is in downtime or acknowledged
+    final isInDowntime = (event.checkResult['downtime_depth'] ?? 0) > 0;
+    final isAcknowledged = event.checkResult['acknowledgement'] ?? false;
+
+    // Don't alert if in downtime or acknowledged
+    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
+
     session.log(
         'NOTIFICATION: $notificationType sent to $users via $command for ${event.host}/${event.service} (State: ${isHardState ? 'HARD' : 'SOFT'})',
         level: LogLevel.info);
@@ -655,8 +719,8 @@ class Icinga2EventListener {
     // TODO: Forward notification to external systems (SMS, email, etc.)
     // TODO: Update notification dashboard
 
-    // Only escalate on hard state notifications
-    if (isHardState &&
+    // Only escalate on hard state notifications, not in downtime/acknowledged
+    if (shouldAlert &&
         (notificationType.contains('PROBLEM') ||
             notificationType.contains('CRITICAL'))) {
       session.log(
@@ -665,7 +729,7 @@ class Icinga2EventListener {
       print(
           '🚨 🚨 🚨 PROBLEM NOTIFICATION: ${event.host}/${event.service} needs immediate attention! 🚨 🚨 🚨');
       // TODO: Escalate to on-call duty officer
-    } else if (isHardState &&
+    } else if (shouldAlert &&
         (notificationType.contains('RECOVERY') ||
             notificationType.contains('OK'))) {
       session.log(
@@ -674,6 +738,14 @@ class Icinga2EventListener {
       print(
           '✅ ✅ ✅ RECOVERY NOTIFICATION: ${event.host}/${event.service} is back OK! ✅ ✅ ✅');
       // TODO: Clear active alerts
+    } else if (isInDowntime || isAcknowledged) {
+      // Log suppressed notifications due to downtime/acknowledgement
+      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
+      session.log(
+          'NOTIFICATION SUPPRESSED ($reason): $notificationType for ${event.host}/${event.service}',
+          level: LogLevel.info);
+      print(
+          '🔕 NOTIFICATION SUPPRESSED ($reason): ${event.host}/${event.service} - $notificationType');
     } else if (!isHardState) {
       session.log(
           'SOFT STATE NOTIFICATION: ${event.host}/${event.service} - $notificationType (not escalating)',
