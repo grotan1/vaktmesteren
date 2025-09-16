@@ -56,9 +56,18 @@ class Icinga2Config {
           'StateChange',
           'Notification',
           'AcknowledgementSet',
-          'AcknowledgementCleared'
+          'AcknowledgementCleared',
+          'CommentAdded',
+          'CommentRemoved',
+          'DowntimeAdded',
+          'DowntimeRemoved',
+          'DowntimeStarted',
+          'DowntimeTriggered',
+          'ObjectCreated',
+          'ObjectModified',
+          'ObjectDeleted'
         ],
-        filter: '',
+        filter: '', // Empty filter to include all events
         timeout: 30,
         reconnectEnabled: true,
         reconnectDelay: 5,
@@ -76,8 +85,23 @@ class Icinga2Config {
         password: 'supersecretpassword',
         skipCertificateVerification: true,
         queue: 'vaktmesteren-server-queue',
-        types: ['CheckResult', 'StateChange', 'Notification'],
-        filter: '',
+        types: [
+          'CheckResult',
+          'StateChange',
+          'Notification',
+          'AcknowledgementSet',
+          'AcknowledgementCleared',
+          'CommentAdded',
+          'CommentRemoved',
+          'DowntimeAdded',
+          'DowntimeRemoved',
+          'DowntimeStarted',
+          'DowntimeTriggered',
+          'ObjectCreated',
+          'ObjectModified',
+          'ObjectDeleted'
+        ],
+        filter: '', // Empty filter to include all events
         timeout: 30,
         reconnectEnabled: true,
         reconnectDelay: 5,
@@ -99,6 +123,11 @@ class Icinga2EventListener {
   bool _isConnected = false;
   bool _isShuttingDown = false;
   IOClient? _ioClient;
+  int _debugEventCount = 0;
+
+  // Polling-based monitoring for integrasjoner
+  Timer? _pollingTimer;
+  final Map<String, int> _integrasjonerServiceStates = {};
 
   Icinga2EventListener(this.session, this.config);
 
@@ -106,21 +135,96 @@ class Icinga2EventListener {
   Future<void> start() async {
     print('Icinga2EventListener: Starting event listener...');
     session.log('Starting Icinga2 event listener...', level: LogLevel.info);
+
+    // Start event streaming
     await _connect();
+
+    // Also start polling for integrasjoner services as backup
+    _startPolling();
   }
 
-  /// Stop the event listener
-  Future<void> stop() async {
-    session.log('Stopping Icinga2 event listener...', level: LogLevel.info);
-    _isShuttingDown = true;
+  /// Start polling for integrasjoner service status
+  void _startPolling() {
+    print(
+        'Icinga2EventListener: Starting polling for integrasjoner services every 30 seconds...');
 
-    _reconnectTimer?.cancel();
-    if (_streamSubscription != null) {
-      await _streamSubscription!.cancel();
+    // Poll immediately on startup
+    _pollIntegrasjonerServices();
+
+    // Then poll every 30 seconds
+    _pollingTimer = Timer.periodic(Duration(seconds: 30), (timer) {
+      if (!_isShuttingDown) {
+        _pollIntegrasjonerServices();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  /// Poll integrasjoner services for status changes
+  Future<void> _pollIntegrasjonerServices() async {
+    try {
+      if (_ioClient == null) return;
+
+      final servicesUrl =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/services?host=integrasjoner';
+      final credentials =
+          base64Encode(utf8.encode('${config.username}:${config.password}'));
+      final headers = {
+        'Authorization': 'Basic $credentials',
+        'Accept': 'application/json',
+      };
+
+      final response =
+          await _ioClient!.get(Uri.parse(servicesUrl), headers: headers);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        final services = json['results'] as List;
+
+        for (final service in services) {
+          final serviceName = service['name'];
+          final state = service['attrs']['state'];
+          final lastCheckResult = service['attrs']['last_check_result'];
+
+          if (serviceName != null && state != null) {
+            final previousState = _integrasjonerServiceStates[serviceName];
+
+            // Only alert if state has changed
+            if (previousState == null || previousState != state) {
+              if (state == 2) {
+                // CRITICAL
+                session.log(
+                    '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
+                    level: LogLevel.error);
+                print(
+                    '🚨 🚨 🚨 POLLED ALERT: Service $serviceName on integrasjoner is CRITICAL! 🚨 🚨 🚨');
+                print('   Details: ${lastCheckResult?['output'] ?? 'Unknown'}');
+              } else if (state == 1) {
+                // WARNING
+                session.log(
+                    '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
+                    level: LogLevel.warning);
+                print(
+                    '⚠️ POLLED WARNING: Service $serviceName on integrasjoner - ${lastCheckResult?['output'] ?? 'Unknown'}');
+              } else if (state == 0 && previousState != null) {
+                // OK - recovered
+                session.log(
+                    '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
+                    level: LogLevel.info);
+                print(
+                    '✅ ✅ ✅ POLLED RECOVERY: Service $serviceName on integrasjoner is back OK! ✅ ✅ ✅');
+              }
+            }
+
+            // Update state tracking
+            _integrasjonerServiceStates[serviceName] = state;
+          }
+        }
+      }
+    } catch (e) {
+      print('Icinga2EventListener: Error polling integrasjoner services: $e');
     }
-    _client?.close();
-
-    _isConnected = false;
   }
 
   /// Connect to Icinga2 event stream
@@ -306,14 +410,36 @@ class Icinga2EventListener {
         if (_isShuttingDown) break;
 
         if (line.trim().isNotEmpty) {
-          print('Icinga2EventListener: Received event line: $line');
+          // Uncomment for debugging: print('Icinga2EventListener: Received event line: $line');
           try {
             final event = jsonDecode(line);
+
+            // Special debugging for integrasjoner events
+            if (event['host'] == 'integrasjoner') {
+              print(
+                  '🎯 INTEGRASJONER EVENT RECEIVED: ${event['type']} for ${event['host']}/${event['service']}');
+            }
+
+            // Log all events for debugging (increased from 5 to 20)
+            if (_debugEventCount < 20) {
+              print(
+                  'Icinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}');
+              _debugEventCount++;
+            }
+
+            // Also log every 100th event to see ongoing activity
+            if (_debugEventCount % 100 == 0) {
+              print(
+                  'Icinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}');
+            }
+
             _handleEvent(event);
           } catch (e) {
             session.log('Failed to parse event: $e', level: LogLevel.warning);
             session.log('Raw event data: $line', level: LogLevel.debug);
           }
+        } else {
+          print('Icinga2EventListener: Received empty line from event stream');
         }
       }
 
