@@ -3,11 +3,10 @@ Portainer CI/CD credentials
 
 This document describes how to store Portainer credentials locally for automated scripts.
 
-1) Create a local config file from the example:
+1) Create a local config file:
 
 ```bash
-cp config/portainer_ci_cd.yaml.example config/portainer_ci_cd.yaml
-# Edit the file and set the real token value. Do not commit this file.
+# Create config/portainer_ci_cd.yaml and set the real token value. Do not commit this file.
 ```
 
 2) Create the file securely without exposing the password in shell history:
@@ -20,7 +19,6 @@ portainer:
   url: "https://portainer.example.com"
   endpoint_id: 1
   token: "$TOKEN"
-  user: "ci_cd"
 EOF
 chmod 600 config/portainer_ci_cd.yaml
 ```

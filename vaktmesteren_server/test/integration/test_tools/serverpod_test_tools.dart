@@ -13,6 +13,7 @@
 // ignore_for_file: no_leading_underscores_for_library_prefixes
 import 'package:serverpod_test/serverpod_test.dart' as _i1;
 import 'package:serverpod/serverpod.dart' as _i2;
+import 'dart:async' as _i3;
 import 'package:vaktmesteren_server/src/generated/protocol.dart';
 import 'package:vaktmesteren_server/src/generated/endpoints.dart';
 export 'package:serverpod_test/serverpod_test_public_exports.dart';
@@ -98,7 +99,9 @@ void withServerpod(
   )(testClosure);
 }
 
-class TestEndpoints {}
+class TestEndpoints {
+  late final _PortainerOpsEndpoint portainerOps;
+}
 
 class _InternalTestEndpoints extends TestEndpoints
     implements _i1.InternalTestEndpoints {
@@ -106,5 +109,58 @@ class _InternalTestEndpoints extends TestEndpoints
   void initialize(
     _i2.SerializationManager serializationManager,
     _i2.EndpointDispatch endpoints,
-  ) {}
+  ) {
+    portainerOps = _PortainerOpsEndpoint(
+      endpoints,
+      serializationManager,
+    );
+  }
+}
+
+class _PortainerOpsEndpoint {
+  _PortainerOpsEndpoint(
+    this._endpointDispatch,
+    this._serializationManager,
+  );
+
+  final _i2.EndpointDispatch _endpointDispatch;
+
+  final _i2.SerializationManager _serializationManager;
+
+  _i3.Future<Map<String, dynamic>> checkService(
+    _i1.TestSessionBuilder sessionBuilder, {
+    int? serviceId,
+    String? serviceName,
+    String? configPath,
+    int? endpointId,
+  }) async {
+    return _i1.callAwaitableFunctionAndHandleExceptions(() async {
+      var _localUniqueSession =
+          (sessionBuilder as _i1.InternalTestSessionBuilder).internalBuild(
+        endpoint: 'portainerOps',
+        method: 'checkService',
+      );
+      try {
+        var _localCallContext = await _endpointDispatch.getMethodCallContext(
+          createSessionCallback: (_) => _localUniqueSession,
+          endpointPath: 'portainerOps',
+          methodName: 'checkService',
+          parameters: _i1.testObjectToJson({
+            'serviceId': serviceId,
+            'serviceName': serviceName,
+            'configPath': configPath,
+            'endpointId': endpointId,
+          }),
+          serializationManager: _serializationManager,
+        );
+        var _localReturnValue = await (_localCallContext.method.call(
+          _localUniqueSession,
+          _localCallContext.arguments,
+        ) as _i3.Future<Map<String, dynamic>>);
+        return _localReturnValue;
+      } finally {
+        await _localUniqueSession.close();
+      }
+    });
+  }
 }

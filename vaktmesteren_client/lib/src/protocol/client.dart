@@ -10,7 +10,36 @@
 
 // ignore_for_file: no_leading_underscores_for_library_prefixes
 import 'package:serverpod_client/serverpod_client.dart' as _i1;
-import 'protocol.dart' as _i2;
+import 'dart:async' as _i2;
+import 'protocol.dart' as _i3;
+
+/// {@category Endpoint}
+class EndpointPortainerOps extends _i1.EndpointRef {
+  EndpointPortainerOps(_i1.EndpointCaller caller) : super(caller);
+
+  @override
+  String get name => 'portainerOps';
+
+  /// Check whether a service exists in Portainer.
+  ///
+  /// This endpoint is intentionally left open (no auth) per operator request.
+  _i2.Future<Map<String, dynamic>> checkService({
+    int? serviceId,
+    String? serviceName,
+    String? configPath,
+    int? endpointId,
+  }) =>
+      caller.callServerEndpoint<Map<String, dynamic>>(
+        'portainerOps',
+        'checkService',
+        {
+          'serviceId': serviceId,
+          'serviceName': serviceName,
+          'configPath': configPath,
+          'endpointId': endpointId,
+        },
+      );
+}
 
 class Client extends _i1.ServerpodClientShared {
   Client(
@@ -28,7 +57,7 @@ class Client extends _i1.ServerpodClientShared {
     bool? disconnectStreamsOnLostInternetConnection,
   }) : super(
           host,
-          _i2.Protocol(),
+          _i3.Protocol(),
           securityContext: securityContext,
           authenticationKeyManager: authenticationKeyManager,
           streamingConnectionTimeout: streamingConnectionTimeout,
@@ -37,10 +66,15 @@ class Client extends _i1.ServerpodClientShared {
           onSucceededCall: onSucceededCall,
           disconnectStreamsOnLostInternetConnection:
               disconnectStreamsOnLostInternetConnection,
-        ) {}
+        ) {
+    portainerOps = EndpointPortainerOps(this);
+  }
+
+  late final EndpointPortainerOps portainerOps;
 
   @override
-  Map<String, _i1.EndpointRef> get endpointRefLookup => {};
+  Map<String, _i1.EndpointRef> get endpointRefLookup =>
+      {'portainerOps': portainerOps};
 
   @override
   Map<String, _i1.ModuleEndpointCaller> get moduleLookup => {};
