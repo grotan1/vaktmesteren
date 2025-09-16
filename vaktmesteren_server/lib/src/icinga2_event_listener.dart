@@ -451,19 +451,35 @@ class Icinga2EventListener {
   /// Helper to decide if we should broadcast alerts to the web UI.
   /// Only events originating from the `integrasjoner` host are broadcast.
   bool _shouldBroadcastForHost(String host) {
-    return host == 'integrasjoner';
+    // Normalize host (lowercase, strip domain) before comparing so
+    // events from e.g. "integrasjoner.example.local" or different
+    // case variants still match the intended host.
+  final baseHost = host.split('.').first.toLowerCase().trim();
+    return baseHost == 'integrasjoner';
   }
 
   /// Canonical key for a service: host!service (service may be empty)
   String _canonicalKey(String host, String? service) {
-    return '$host!${service ?? ''}';
+    // Normalize host and service parts so the same logical service maps
+    // to a single canonical key even if host/service casing or domain
+    // suffixes differ between events.
+  final baseHost = host.split('.').first.toLowerCase().trim();
+    final svc = service?.toLowerCase().trim() ?? '';
+    return '$baseHost!$svc';
   }
 
   /// Return true if we should broadcast this state for the given key.
   /// Ensures we only broadcast a given state once per key until it changes.
   bool _shouldBroadcastForKey(String key, int state) {
     final last = _lastBroadcastState[key];
-    if (last != null && last == state) return false;
+    // Debug: log transitions to help understand missed broadcasts
+    if (last == state) {
+      session.log('No broadcast for $key: state unchanged ($state)',
+          level: LogLevel.debug);
+      return false;
+    }
+    session.log('Broadcasting for $key: state changed ${last ?? 'null'} -> $state',
+        level: LogLevel.debug);
     _lastBroadcastState[key] = state;
     return true;
   }
@@ -491,16 +507,24 @@ class Icinga2EventListener {
     // Don't alert if in downtime or acknowledged
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
-    // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
-    final canonical = _canonicalKey(event.host, event.service);
+  // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
+  final canonical = _canonicalKey(event.host, event.service);
+  // Diagnostic logging to help debug missed broadcasts where an OK recovery
+  // is observed but later ALERTs aren't emitted. This prints host/service
+  // canonicalization and decision flags.
+  session.log(
+    'CheckResult decision for $canonical: state=$state exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
+    level: LogLevel.debug);
     if ((state == 'CRITICAL' || exitCode == 2) && shouldAlert) {
       session.log('🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output',
           level: LogLevel.error);
       print(
           '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Send critical alert to duty officer
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, 2)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, 2)) {
         LogBroadcaster.broadcastLog(
             '🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output');
       }
@@ -509,8 +533,10 @@ class Icinga2EventListener {
           level: LogLevel.warning);
       print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
       // TODO: Send warning notification
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, 1)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, 1)) {
         LogBroadcaster.broadcastLog(
             '⚠️ ALERT WARNING: ${event.host}/${event.service} - $output');
       }
@@ -519,11 +545,23 @@ class Icinga2EventListener {
           level: LogLevel.info);
       print(
           '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, 0)) {
-        LogBroadcaster.broadcastLog(
-            '✅ ALERT RECOVERY: ${event.host}/${event.service} - $output');
-      }
+  if (!_shouldBroadcastForHost(event.host)) {
+    session.log('Skipping broadcast for $canonical: host filter mismatch',
+    level: LogLevel.debug);
+  } else if (_shouldBroadcastForKey(canonical, 0)) {
+    LogBroadcaster.broadcastLog(
+    '✅ ALERT RECOVERY: ${event.host}/${event.service} - $output');
+  }
+
+  // Ensure we record the recovery state so subsequent alerts are
+  // recognized. If the recovery was not broadcast for some reason
+  // (soft state, suppression, etc.), updating the last state here
+  // prevents the previous ALERT state from blocking future alerts.
+  try {
+    _lastBroadcastState[canonical] = 0;
+    session.log('Recorded recovery state for $canonical -> 0',
+    level: LogLevel.debug);
+  } catch (_) {}
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed alerts due to downtime/acknowledgement
       final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
@@ -576,7 +614,10 @@ class Icinga2EventListener {
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
     // Log state changes with appropriate severity - but only alert on hard states
-    final canonical = _canonicalKey(event.host, event.service);
+  final canonical = _canonicalKey(event.host, event.service);
+  session.log(
+    'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
+    level: LogLevel.debug);
     if (event.state == 2 && shouldAlert) {
       // CRITICAL - Hard state only, not in downtime/acknowledged
       session.log(
@@ -585,8 +626,10 @@ class Icinga2EventListener {
       final logMessage =
           '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, event.state)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, event.state)) {
         LogBroadcaster.broadcastLog(logMessage);
       }
       // TODO: Trigger critical alert escalation
@@ -598,8 +641,10 @@ class Icinga2EventListener {
       final logMessage =
           '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, event.state)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, event.state)) {
         LogBroadcaster.broadcastLog(logMessage);
       }
       // TODO: Send warning notification
@@ -611,8 +656,10 @@ class Icinga2EventListener {
       final logMessage =
           '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
       print(logMessage);
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, event.state)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, event.state)) {
         LogBroadcaster.broadcastLog(logMessage);
       }
       // TODO: Clear active alerts
@@ -625,8 +672,10 @@ class Icinga2EventListener {
       final logMessage =
           '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
       print(logMessage);
-      if (_shouldBroadcastForHost(event.host) &&
-          _shouldBroadcastForKey(canonical, event.state)) {
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, event.state)) {
         LogBroadcaster.broadcastLog(logMessage);
       }
     } else {
