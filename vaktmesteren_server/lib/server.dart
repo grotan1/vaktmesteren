@@ -28,20 +28,26 @@ void run(List<String> args) async {
 
   // Initialize Icinga2 event listener with proper session management
   try {
+    print('Initializing Icinga2 event listener...');
     // Create a session for the event listener
     final session = await pod.createSession();
+    print('Session created successfully');
 
     // Load Icinga2 configuration
     final config = await Icinga2Config.loadFromConfig(session);
+    print('Configuration loaded: ${config.host}:${config.port}');
 
     // Create and start the event listener
     final eventListener = Icinga2EventListener(session, config);
+    print('Event listener created, starting...');
     await eventListener.start();
 
     session.log('Icinga2 event listener started successfully',
         level: LogLevel.info);
+    print('Icinga2 event listener started successfully');
   } catch (e) {
     // Log the error using Serverpod's logging system
+    print('Failed to start Icinga2 event listener: $e');
     try {
       final errorSession = await pod.createSession();
       errorSession.log('Failed to start Icinga2 event listener: $e',
