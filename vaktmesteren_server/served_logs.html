@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{title}}</title>
+    <title>Vaktmesteren - Real-time Log Viewer</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -13,42 +13,42 @@
             --muted: #94a3b8;
             --accent: #7c5cff;
             --danger: #ff6b6b;
-            --ok: #38bdf8;
+            --ok: #38bdf8
         }
 
         * {
-            box-sizing: border-box;
+            box-sizing: border-box
         }
 
         body {
             font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
             margin: 0;
             background: linear-gradient(180deg, var(--bg), #071022);
-            color: #e6eef8;
+            color: #e6eef8
         }
 
         .container {
             max-width: 1200px;
             margin: 24px auto;
-            padding: 20px;
+            padding: 20px
         }
 
         header {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: space-between
         }
 
         h1 {
             font-size: 20px;
             margin: 0;
-            font-weight: 600;
+            font-weight: 600
         }
 
         .controls {
             display: flex;
             gap: 10px;
-            align-items: center;
+            align-items: center
         }
 
         .btn {
@@ -57,26 +57,26 @@
             padding: 8px 12px;
             border-radius: 8px;
             border: none;
-            cursor: pointer;
+            cursor: pointer
         }
 
         .btn.ghost {
             background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.06)
         }
 
         .layout {
             display: grid;
             grid-template-columns: 1fr 320px;
             gap: 16px;
-            margin-top: 18px;
+            margin-top: 18px
         }
 
         .panel {
             background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
             border: 1px solid rgba(255, 255, 255, 0.03);
             padding: 12px;
-            border-radius: 12px;
+            border-radius: 12px
         }
 
         #logContainer {
@@ -84,14 +84,14 @@
             overflow: auto;
             padding: 8px;
             font-family: monospace;
-            font-size: 13px;
+            font-size: 13px
         }
 
         .log-entry {
             padding: 8px;
             border-radius: 6px;
             margin-bottom: 8px;
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255, 255, 255, 0.02)
         }
 
         .log-entry.critical {
@@ -99,16 +99,16 @@
         }
 
         .log-entry.warning {
-            border-left: 4px solid #f6c85f;
+            border-left: 4px solid #f6c85f
         }
 
         .log-entry.recovery {
-            border-left: 4px solid #2ecc71;
+            border-left: 4px solid #2ecc71
         }
 
         .small {
             font-size: 13px;
-            color: var(--muted);
+            color: var(--muted)
         }
 
         .search {
@@ -116,18 +116,18 @@
             padding: 8px;
             border-radius: 8px;
             border: none;
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255, 255, 255, 0.02)
         }
 
         footer {
             margin-top: 16px;
             color: var(--muted);
-            font-size: 13px;
+            font-size: 13px
         }
 
-        @media (max-width: 880px) {
+        @media(max-width:880px) {
             .layout {
-                grid-template-columns: 1fr;
+                grid-template-columns: 1fr
             }
         }
     </style>
@@ -137,7 +137,7 @@
     <div class="container">
         <header>
             <div>
-                <h1>{{title}}</h1>
+                <h1>Vaktmesteren - Real-time Log Viewer</h1>
                 <div class="small">Realtime Icinga2 event stream</div>
             </div>
             <div class="controls">
@@ -187,8 +187,7 @@
             const autoScrollEl = document.getElementById('autoScroll');
 
             let totalLogs = 0;
-            let ws = null;
-            let paused = false;
+            let ws = null, paused = false;
 
             function setConnection(connected, text) {
                 connectionStatus.textContent = text;
@@ -202,19 +201,6 @@
 
             function addLogEntry(message) {
                 if (!matchesFilter(message)) return;
-
-                // Prevent immediate duplicate entries in the UI. If the last
-                // displayed log already ends with the same message, skip adding
-                // another one. This avoids noisy duplicates when the server
-                // accidentally emits the same message multiple times quickly.
-                const lastChild = logContainer.lastElementChild;
-                if (lastChild && typeof lastChild.textContent === 'string') {
-                    if (lastChild.textContent.endsWith(message)) {
-                        // Skip duplicate
-                        return;
-                    }
-                }
-
                 const div = document.createElement('div');
                 div.className = 'log-entry';
                 const mu = (message || '').toUpperCase();
@@ -233,43 +219,19 @@
 
             function startWS() {
                 try {
-                    // Avoid creating multiple concurrent WebSocket connections.
-                    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-                        console.debug('startWS: websocket already open or connecting; skipping');
-                        return;
-                    }
-
-                    // If there's an existing socket in CLOSING state, try to close it cleanly first.
-                    if (ws && ws.readyState === WebSocket.CLOSING) {
-                        try { ws.close(); } catch (_) { }
-                        ws = null;
-                    }
-
                     ws = new WebSocket(wsUrl);
                     ws.onopen = function () { setConnection(true, 'Connected (WebSocket)'); };
                     ws.onmessage = function (e) { try { const d = JSON.parse(e.data); if (d && d.type === 'log' && d.message) addLogEntry(d.message); else if (d && d.type === 'ping') updateTimestamp(); } catch (err) { addLogEntry(e.data); } };
-                    ws.onerror = function () { try { if (ws) ws.close(); } catch (_) { } setConnection(false, 'WS Error'); ws = null; setTimeout(startWS, 2000); };
-                    ws.onclose = function () { setConnection(false, 'WebSocket closed'); ws = null; setTimeout(startWS, 2000); };
-                } catch (e) { setConnection(false, 'WS Failed'); ws = null; setTimeout(startWS, 2000); }
+                    ws.onerror = function (err) { try { ws.close(); } catch (_) { } setConnection(false, 'WS Error'); setTimeout(startWS, 2000); };
+                    ws.onclose = function () { setConnection(false, 'WebSocket closed'); setTimeout(startWS, 2000); };
+                } catch (e) { setConnection(false, 'WS Failed'); setTimeout(startWS, 2000); }
             }
 
-            // Start WebSocket-only connection with auto-reconnect
             startWS();
 
             document.getElementById('btnTest').addEventListener('click', function () { fetch(origin + '/logs/test').catch(console.error); });
             document.getElementById('btnClear').addEventListener('click', clearLogs);
-            document.getElementById('btnPause').addEventListener('click', function () {
-                paused = !paused;
-                this.textContent = paused ? 'Resume' : 'Pause';
-                if (paused) {
-                    try {
-                        if (ws) ws.close();
-                    } catch (_) { }
-                    ws = null; // ensure we clear the reference so startWS can create a new one later
-                } else {
-                    startWS();
-                }
-            });
+            document.getElementById('btnPause').addEventListener('click', function () { paused = !paused; this.textContent = paused ? 'Resume' : 'Pause'; if (paused) { if (eventSource) eventSource.close(); if (pollingInterval) clearInterval(pollingInterval); } else startSSE(); });
             document.getElementById('btnDownload').addEventListener('click', function () { const txt = Array.from(logContainer.querySelectorAll('.log-entry')).map(n => n.textContent).join('\n'); const blob = new Blob([txt], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'logs.txt'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); });
             searchEl.addEventListener('input', function () { Array.from(logContainer.children).forEach(ch => { ch.style.display = matchesFilter(ch.textContent) ? 'block' : 'none'; }); });
 

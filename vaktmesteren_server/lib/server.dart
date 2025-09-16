@@ -21,7 +21,10 @@ void run(List<String> args) async {
 
   // Setup log viewer routes
   pod.webServer.addRoute(RouteLogViewer(), '/logs');
-  pod.webServer.addRoute(RouteLogStream(), '/logs/stream');
+  // SSE stream removed; use WebSocket route instead for realtime logs
+  pod.webServer.addRoute(RouteLogWebSocket(), '/logs/ws');
+  pod.webServer.addRoute(RouteLogPoll(), '/logs/poll');
+  pod.webServer.addRoute(RouteLogTest(), '/logs/test');
 
   // Serve all files in the /static directory.
   pod.webServer.addRoute(

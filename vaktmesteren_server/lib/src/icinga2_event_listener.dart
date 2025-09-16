@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:serverpod/serverpod.dart';
 import 'icinga2_events.dart';
@@ -117,18 +116,17 @@ class Icinga2EventListener {
   final Session session;
   final Icinga2Config config;
 
-  http.Client? _client;
-  StreamSubscription<String>? _streamSubscription;
-  Timer? _reconnectTimer;
+  // NOTE: _client, _streamSubscription and _reconnectTimer were unused and
+  // removed to satisfy analyzer warnings.
   int _retryCount = 0;
-  bool _isConnected = false;
   bool _isShuttingDown = false;
   IOClient? _ioClient;
   int _debugEventCount = 0;
 
-  // Polling-based monitoring for integrasjoner
-  Timer? _pollingTimer;
-  final Map<String, int> _integrasjonerServiceStates = {};
+  // Polling has been removed - the event stream (and websocket) provide live updates.
+  Timer? _reconnectTimer;
+  // Track last broadcast state per canonical key (host!service) to avoid duplicate alerts
+  final Map<String, int> _lastBroadcastState = {};
 
   Icinga2EventListener(this.session, this.config);
 
@@ -136,152 +134,18 @@ class Icinga2EventListener {
   Future<void> start() async {
     print('Icinga2EventListener: Starting event listener...');
     final startMessage = '🟢 Icinga2EventListener: Starting event listener...';
-    RouteLogStream.broadcastLog(startMessage);
+    LogBroadcaster.broadcastLog(startMessage);
     session.log('Starting Icinga2 event listener...', level: LogLevel.info);
 
-    // Start event streaming
-    await _connect();
+    // Start event streaming in background (don't await) so polling can run as a fallback
+    _connect();
 
-    // Also start polling for integrasjoner services as backup
-    _startPolling();
+    // No polling started - we rely on the event stream and websocket for updates.
   }
 
-  /// Start polling for integrasjoner service status
-  void _startPolling() {
-    print(
-        'Icinga2EventListener: Starting polling for integrasjoner services every 30 seconds...');
+  // Polling removed - no-op.
 
-    // Poll immediately on startup
-    _pollIntegrasjonerServices();
-
-    // Then poll every 30 seconds
-    _pollingTimer = Timer.periodic(Duration(seconds: 30), (timer) {
-      if (!_isShuttingDown) {
-        _pollIntegrasjonerServices();
-      } else {
-        timer.cancel();
-      }
-    });
-  }
-
-  /// Poll integrasjoner services for status changes
-  Future<void> _pollIntegrasjonerServices() async {
-    try {
-      if (_ioClient == null) return;
-
-      final servicesUrl =
-          '${config.scheme}://${config.host}:${config.port}/v1/objects/services?host=integrasjoner';
-      final credentials =
-          base64Encode(utf8.encode('${config.username}:${config.password}'));
-      final headers = {
-        'Authorization': 'Basic $credentials',
-        'Accept': 'application/json',
-      };
-
-      final response =
-          await _ioClient!.get(Uri.parse(servicesUrl), headers: headers);
-
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body);
-        final services = json['results'] as List;
-
-        for (final service in services) {
-          final serviceName = service['name'];
-          final state = service['attrs']['state'];
-          final stateType =
-              service['attrs']['state_type']; // 0 = SOFT, 1 = HARD
-          final lastCheckResult = service['attrs']['last_check_result'];
-
-          if (serviceName != null && state != null) {
-            final previousState = _integrasjonerServiceStates[serviceName];
-
-            // Only alert if state has changed AND it's a HARD state (not SOFT)
-            final isHardState = stateType == 1;
-
-            // Check if service is in downtime or acknowledged
-            final isInDowntime = (service['attrs']['downtime_depth'] ?? 0) > 0;
-            final isAcknowledged = service['attrs']['acknowledgement'] ?? false;
-
-            // Don't alert if in downtime or acknowledged
-            final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
-
-            if ((previousState == null || previousState != state) &&
-                shouldAlert) {
-              if (state == 2) {
-                // CRITICAL - Hard state only, not in downtime/acknowledged
-                session.log(
-                    '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
-                    level: LogLevel.error);
-                final logMessage =
-                    '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
-                print(logMessage);
-                RouteLogStream.broadcastLog(logMessage);
-              } else if (state == 1) {
-                // WARNING - Hard state only, not in downtime/acknowledged
-                session.log(
-                    '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
-                    level: LogLevel.warning);
-                final logMessage =
-                    '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
-                print(logMessage);
-                RouteLogStream.broadcastLog(logMessage);
-              } else if (state == 0 && previousState != null) {
-                // OK - Hard state recovery (always alert recoveries)
-                session.log(
-                    '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
-                    level: LogLevel.info);
-                final logMessage =
-                    '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK';
-                print(logMessage);
-                RouteLogStream.broadcastLog(logMessage);
-              }
-            } else if ((previousState == null || previousState != state) &&
-                (isInDowntime || isAcknowledged)) {
-              // Log suppressed alerts due to downtime/acknowledgement
-              final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
-              final stateNames = {
-                0: 'OK',
-                1: 'WARNING',
-                2: 'CRITICAL',
-                3: 'UNKNOWN'
-              };
-              final stateTypeNames = {0: 'SOFT', 1: 'HARD'};
-              final stateName = stateNames[state] ?? 'UNKNOWN';
-              final stateTypeName = stateTypeNames[stateType] ?? 'UNKNOWN';
-
-              session.log(
-                  'POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
-                  level: LogLevel.info);
-              final logMessage =
-                  '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName';
-              print(logMessage);
-              RouteLogStream.broadcastLog(logMessage);
-            } else if (previousState == null || previousState != state) {
-              // Log soft state changes without alerting
-              final stateNames = {
-                0: 'OK',
-                1: 'WARNING',
-                2: 'CRITICAL',
-                3: 'UNKNOWN'
-              };
-              final stateTypeNames = {0: 'SOFT', 1: 'HARD'};
-              final stateName = stateNames[state] ?? 'UNKNOWN';
-              final stateTypeName = stateTypeNames[stateType] ?? 'UNKNOWN';
-
-              session.log(
-                  'POLLED STATE CHANGE (Soft): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
-                  level: LogLevel.info);
-            }
-
-            // Update state tracking
-            _integrasjonerServiceStates[serviceName] = state;
-          }
-        }
-      }
-    } catch (e) {
-      print('Icinga2EventListener: Error polling integrasjoner services: $e');
-    }
-  }
+  // Polling code removed.
 
   /// Connect to Icinga2 event stream
   Future<void> _connect() async {
@@ -425,10 +289,9 @@ class Icinga2EventListener {
               'Icinga2EventListener: Successfully connected to Icinga2 event stream');
           final connectMessage =
               '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
-          RouteLogStream.broadcastLog(connectMessage);
+          LogBroadcaster.broadcastLog(connectMessage);
           session.log('Successfully connected to Icinga2 event stream',
               level: LogLevel.info);
-          _isConnected = true;
           _retryCount = 0;
 
           // Process the event stream
@@ -447,7 +310,6 @@ class Icinga2EventListener {
     } catch (e) {
       print('Icinga2EventListener: Failed to connect to Icinga2: $e');
       session.log('Failed to connect to Icinga2: $e', level: LogLevel.error);
-      _isConnected = false;
 
       if (config.reconnectEnabled && !_isShuttingDown) {
         _scheduleReconnect();
@@ -503,9 +365,20 @@ class Icinga2EventListener {
       }
 
       print('Icinga2EventListener: Event stream ended');
+
+      // If the stream ended unexpectedly (not during shutdown), schedule a
+      // reconnect so we resume listening automatically. This prevents the
+      // listener from stopping permanently when the connection drops.
+      if (config.reconnectEnabled && !_isShuttingDown) {
+        session.log('Event stream ended unexpectedly, scheduling reconnect',
+            level: LogLevel.warning);
+        _scheduleReconnect();
+      }
     } catch (e) {
       print('Icinga2EventListener: Error processing event stream: $e');
       session.log('Error processing event stream: $e', level: LogLevel.error);
+
+      // Reconnection will be scheduled below if configured.
 
       if (config.reconnectEnabled && !_isShuttingDown) {
         _scheduleReconnect();
@@ -575,6 +448,30 @@ class Icinga2EventListener {
     }
   }
 
+  /// Helper to decide if we should broadcast alerts to the web UI.
+  /// Only events originating from the `integrasjoner` host are broadcast.
+  bool _shouldBroadcastForHost(String host) {
+    return host == 'integrasjoner';
+  }
+
+  /// Canonical key for a service: host!service (service may be empty)
+  String _canonicalKey(String host, String? service) {
+    return '$host!${service ?? ''}';
+  }
+
+  /// Return true if we should broadcast this state for the given key.
+  /// Ensures we only broadcast a given state once per key until it changes.
+  bool _shouldBroadcastForKey(String key, int state) {
+    final last = _lastBroadcastState[key];
+    if (last != null && last == state) return false;
+    _lastBroadcastState[key] = state;
+    return true;
+  }
+
+  /// Convert a check_result map or state string/exit code to an integer state code.
+  /// 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN
+  // NOTE: _stateCodeFromCheckResult was removed because it was unused.
+
   /// Handle check result events
   void _handleCheckResult(CheckResultEvent event) {
     // Process check result based on state and exit code
@@ -595,22 +492,38 @@ class Icinga2EventListener {
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
     // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
+    final canonical = _canonicalKey(event.host, event.service);
     if ((state == 'CRITICAL' || exitCode == 2) && shouldAlert) {
       session.log('🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output',
           level: LogLevel.error);
       print(
           '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Send critical alert to duty officer
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, 2)) {
+        LogBroadcaster.broadcastLog(
+            '🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output');
+      }
     } else if ((state == 'WARNING' || exitCode == 1) && shouldAlert) {
       session.log('⚠️ ALERT WARNING: ${event.host}/${event.service} - $output',
           level: LogLevel.warning);
       print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
       // TODO: Send warning notification
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, 1)) {
+        LogBroadcaster.broadcastLog(
+            '⚠️ ALERT WARNING: ${event.host}/${event.service} - $output');
+      }
     } else if (state == 'OK' || exitCode == 0) {
       session.log('✅ ALERT RECOVERY: ${event.host}/${event.service} - $output',
           level: LogLevel.info);
       print(
           '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, 0)) {
+        LogBroadcaster.broadcastLog(
+            '✅ ALERT RECOVERY: ${event.host}/${event.service} - $output');
+      }
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed alerts due to downtime/acknowledgement
       final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
@@ -663,6 +576,7 @@ class Icinga2EventListener {
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
     // Log state changes with appropriate severity - but only alert on hard states
+    final canonical = _canonicalKey(event.host, event.service);
     if (event.state == 2 && shouldAlert) {
       // CRITICAL - Hard state only, not in downtime/acknowledged
       session.log(
@@ -671,7 +585,10 @@ class Icinga2EventListener {
       final logMessage =
           '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
-      RouteLogStream.broadcastLog(logMessage);
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, event.state)) {
+        LogBroadcaster.broadcastLog(logMessage);
+      }
       // TODO: Trigger critical alert escalation
     } else if (event.state == 1 && shouldAlert) {
       // WARNING - Hard state only, not in downtime/acknowledged
@@ -681,7 +598,10 @@ class Icinga2EventListener {
       final logMessage =
           '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
-      RouteLogStream.broadcastLog(logMessage);
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, event.state)) {
+        LogBroadcaster.broadcastLog(logMessage);
+      }
       // TODO: Send warning notification
     } else if (event.state == 0 && isHardState) {
       // OK - Hard state recovery (always alert recoveries)
@@ -691,7 +611,10 @@ class Icinga2EventListener {
       final logMessage =
           '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
       print(logMessage);
-      RouteLogStream.broadcastLog(logMessage);
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, event.state)) {
+        LogBroadcaster.broadcastLog(logMessage);
+      }
       // TODO: Clear active alerts
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed alerts due to downtime/acknowledgement
@@ -702,7 +625,10 @@ class Icinga2EventListener {
       final logMessage =
           '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
       print(logMessage);
-      RouteLogStream.broadcastLog(logMessage);
+      if (_shouldBroadcastForHost(event.host) &&
+          _shouldBroadcastForKey(canonical, event.state)) {
+        LogBroadcaster.broadcastLog(logMessage);
+      }
     } else {
       // Log soft states or unknown states without alerting
       session.log(
@@ -895,5 +821,25 @@ class Icinga2EventListener {
         _connect();
       }
     });
+  }
+
+  /// Stop the event listener and clean up resources
+  /// Cancels any pending reconnect timer and closes the HTTP client.
+  Future<void> stop() async {
+    _isShuttingDown = true;
+
+    if (_reconnectTimer?.isActive ?? false) {
+      _reconnectTimer?.cancel();
+    }
+    _reconnectTimer = null;
+
+    try {
+      _ioClient?.close();
+    } catch (_) {
+      // ignore errors during shutdown
+    }
+    _ioClient = null;
+
+    session.log('Icinga2EventListener: Stopped', level: LogLevel.info);
   }
 }
