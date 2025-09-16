@@ -12,7 +12,8 @@ class RouteLogViewer extends WidgetRoute {
 }
 
 class RouteLogStream extends Route {
-  static final StreamController<String> _logController = StreamController<String>.broadcast();
+  static final StreamController<String> _logController =
+      StreamController<String>.broadcast();
 
   static void broadcastLog(String message) {
     _logController.add(message);
@@ -25,17 +26,22 @@ class RouteLogStream extends Route {
     request.response.headers.set('Cache-Control', 'no-cache');
     request.response.headers.set('Connection', 'keep-alive');
     request.response.headers.set('Access-Control-Allow-Origin', '*');
-    request.response.headers.set('Access-Control-Allow-Headers', 'Cache-Control');
+    request.response.headers
+        .set('Access-Control-Allow-Headers', 'Cache-Control');
 
     // Send initial connection message
-    request.response.write('data: ${jsonEncode({'type': 'connected', 'message': 'Connected to log stream'})}\n\n');
+    request.response.write('data: ${jsonEncode({
+          'type': 'connected',
+          'message': 'Connected to log stream'
+        })}\n\n');
     await request.response.flush();
 
     // Subscribe to log stream
     late StreamSubscription<String> subscription;
     subscription = _logController.stream.listen((message) {
       try {
-        request.response.write('data: ${jsonEncode({'type': 'log', 'message': message})}\n\n');
+        request.response.write(
+            'data: ${jsonEncode({'type': 'log', 'message': message})}\n\n');
         request.response.flush();
       } catch (e) {
         // Client might have disconnected

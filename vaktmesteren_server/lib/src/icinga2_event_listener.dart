@@ -212,7 +212,8 @@ class Icinga2EventListener {
                 session.log(
                     '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.error);
-                final logMessage = '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
+                final logMessage =
+                    '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
                 print(logMessage);
                 RouteLogStream.broadcastLog(logMessage);
               } else if (state == 1) {
@@ -220,7 +221,8 @@ class Icinga2EventListener {
                 session.log(
                     '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.warning);
-                final logMessage = '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
+                final logMessage =
+                    '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
                 print(logMessage);
                 RouteLogStream.broadcastLog(logMessage);
               } else if (state == 0 && previousState != null) {
@@ -228,7 +230,8 @@ class Icinga2EventListener {
                 session.log(
                     '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
                     level: LogLevel.info);
-                final logMessage = '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK';
+                final logMessage =
+                    '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK';
                 print(logMessage);
                 RouteLogStream.broadcastLog(logMessage);
               }
@@ -249,7 +252,8 @@ class Icinga2EventListener {
               session.log(
                   'POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
                   level: LogLevel.info);
-              final logMessage = '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName';
+              final logMessage =
+                  '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName';
               print(logMessage);
               RouteLogStream.broadcastLog(logMessage);
             } else if (previousState == null || previousState != state) {
@@ -419,7 +423,8 @@ class Icinga2EventListener {
         if (response.statusCode == 200) {
           print(
               'Icinga2EventListener: Successfully connected to Icinga2 event stream');
-          final connectMessage = '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
+          final connectMessage =
+              '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
           RouteLogStream.broadcastLog(connectMessage);
           session.log('Successfully connected to Icinga2 event stream',
               level: LogLevel.info);
@@ -663,7 +668,8 @@ class Icinga2EventListener {
       session.log(
           '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.error);
-      final logMessage = '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
+      final logMessage =
+          '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
       RouteLogStream.broadcastLog(logMessage);
       // TODO: Trigger critical alert escalation
@@ -672,7 +678,8 @@ class Icinga2EventListener {
       session.log(
           '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.warning);
-      final logMessage = '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
+      final logMessage =
+          '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
       print(logMessage);
       RouteLogStream.broadcastLog(logMessage);
       // TODO: Send warning notification
@@ -681,7 +688,8 @@ class Icinga2EventListener {
       session.log(
           '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
           level: LogLevel.info);
-      final logMessage = '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
+      final logMessage =
+          '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
       print(logMessage);
       RouteLogStream.broadcastLog(logMessage);
       // TODO: Clear active alerts
@@ -691,7 +699,8 @@ class Icinga2EventListener {
       session.log(
           'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.info);
-      final logMessage = '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
+      final logMessage =
+          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
       print(logMessage);
       RouteLogStream.broadcastLog(logMessage);
     } else {

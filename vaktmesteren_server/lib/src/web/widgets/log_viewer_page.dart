@@ -6,7 +6,6 @@ class LogViewerPage extends Widget {
   LogViewerPage() : super(name: 'log_viewer') {
     values = {
       'title': 'Vaktmesteren - Real-time Log Viewer',
-      'timestamp': DateTime.now(),
     };
   }
 }
