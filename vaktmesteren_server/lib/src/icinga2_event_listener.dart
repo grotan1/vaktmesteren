@@ -185,15 +185,19 @@ class Icinga2EventListener {
         for (final service in services) {
           final serviceName = service['name'];
           final state = service['attrs']['state'];
+          final stateType =
+              service['attrs']['state_type']; // 0 = SOFT, 1 = HARD
           final lastCheckResult = service['attrs']['last_check_result'];
 
           if (serviceName != null && state != null) {
             final previousState = _integrasjonerServiceStates[serviceName];
 
-            // Only alert if state has changed
-            if (previousState == null || previousState != state) {
+            // Only alert if state has changed AND it's a HARD state (not SOFT)
+            final isHardState = stateType == 1;
+            if ((previousState == null || previousState != state) &&
+                isHardState) {
               if (state == 2) {
-                // CRITICAL
+                // CRITICAL - Hard state only
                 session.log(
                     '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.error);
@@ -201,20 +205,35 @@ class Icinga2EventListener {
                     '🚨 🚨 🚨 POLLED ALERT: Service $serviceName on integrasjoner is CRITICAL! 🚨 🚨 🚨');
                 print('   Details: ${lastCheckResult?['output'] ?? 'Unknown'}');
               } else if (state == 1) {
-                // WARNING
+                // WARNING - Hard state only
                 session.log(
                     '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.warning);
                 print(
                     '⚠️ POLLED WARNING: Service $serviceName on integrasjoner - ${lastCheckResult?['output'] ?? 'Unknown'}');
               } else if (state == 0 && previousState != null) {
-                // OK - recovered
+                // OK - Hard state recovery
                 session.log(
                     '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
                     level: LogLevel.info);
                 print(
                     '✅ ✅ ✅ POLLED RECOVERY: Service $serviceName on integrasjoner is back OK! ✅ ✅ ✅');
               }
+            } else if (previousState == null || previousState != state) {
+              // Log soft state changes without alerting
+              final stateNames = {
+                0: 'OK',
+                1: 'WARNING',
+                2: 'CRITICAL',
+                3: 'UNKNOWN'
+              };
+              final stateTypeNames = {0: 'SOFT', 1: 'HARD'};
+              final stateName = stateNames[state] ?? 'UNKNOWN';
+              final stateTypeName = stateTypeNames[stateType] ?? 'UNKNOWN';
+
+              session.log(
+                  'POLLED STATE CHANGE (Soft): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
+                  level: LogLevel.info);
             }
 
             // Update state tracking
@@ -523,17 +542,35 @@ class Icinga2EventListener {
     final exitCode = event.checkResult['exit_code'] ?? -1;
     final output = event.checkResult['output'] ?? '';
 
-    // Log based on severity
-    if (state == 'CRITICAL' || exitCode == 2) {
-      session.log('CRITICAL: ${event.host}/${event.service} - $output',
+    // Check if this is a hard state (state_type == 1) - if not available, assume hard for critical
+    final stateType =
+        event.checkResult['state_type'] ?? (exitCode == 2 ? 1 : 0);
+    final isHardState = stateType == 1;
+
+    // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
+    if ((state == 'CRITICAL' || exitCode == 2) && isHardState) {
+      session.log('🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output',
           level: LogLevel.error);
+      print(
+          '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Send critical alert to duty officer
-    } else if (state == 'WARNING' || exitCode == 1) {
-      session.log('WARNING: ${event.host}/${event.service} - $output',
+    } else if ((state == 'WARNING' || exitCode == 1) && isHardState) {
+      session.log('⚠️ ALERT WARNING: ${event.host}/${event.service} - $output',
           level: LogLevel.warning);
+      print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
       // TODO: Send warning notification
     } else if (state == 'OK' || exitCode == 0) {
-      session.log('OK: ${event.host}/${event.service} - $output',
+      session.log('✅ ALERT RECOVERY: ${event.host}/${event.service} - $output',
+          level: LogLevel.info);
+      print(
+          '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
+    } else if (state == 'CRITICAL' || exitCode == 2) {
+      // Log soft critical states without alerting
+      session.log('SOFT CRITICAL: ${event.host}/${event.service} - $output',
+          level: LogLevel.warning);
+    } else if (state == 'WARNING' || exitCode == 1) {
+      // Log soft warning states without alerting
+      session.log('SOFT WARNING: ${event.host}/${event.service} - $output',
           level: LogLevel.info);
     } else {
       session.log('UNKNOWN: ${event.host}/${event.service} - $output',
@@ -560,28 +597,37 @@ class Icinga2EventListener {
     final stateName = stateNames[event.state] ?? 'UNKNOWN';
     final stateTypeName = stateTypeNames[event.stateType] ?? 'UNKNOWN';
 
-    // Log state changes with appropriate severity
-    if (event.state == 2) {
-      // CRITICAL
+    // Only alert on HARD states (stateType == 1), not SOFT states (stateType == 0)
+    final isHardState = event.stateType == 1;
+
+    // Log state changes with appropriate severity - but only alert on hard states
+    if (event.state == 2 && isHardState) {
+      // CRITICAL - Hard state only
       session.log(
-          'STATE CHANGE CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.error);
+      print(
+          '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
       // TODO: Trigger critical alert escalation
-    } else if (event.state == 1) {
-      // WARNING
+    } else if (event.state == 1 && isHardState) {
+      // WARNING - Hard state only
       session.log(
-          'STATE CHANGE WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.warning);
+      print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
       // TODO: Send warning notification
-    } else if (event.state == 0) {
-      // OK
+    } else if (event.state == 0 && isHardState) {
+      // OK - Hard state recovery
       session.log(
-          'STATE CHANGE OK: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
+          '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
           level: LogLevel.info);
+      print(
+          '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
       // TODO: Clear active alerts
     } else {
+      // Log soft states or unknown states without alerting
       session.log(
-          'STATE CHANGE: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          'STATE CHANGE (Soft): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.info);
     }
 
@@ -596,26 +642,42 @@ class Icinga2EventListener {
     final users = event.users.join(', ');
     final command = event.command;
 
+    // Check if this notification is for a hard state
+    final stateType = event.checkResult['state_type'] ??
+        1; // Default to hard if not specified
+    final isHardState = stateType == 1;
+
     session.log(
-        'NOTIFICATION: $notificationType sent to $users via $command for ${event.host}/${event.service}',
+        'NOTIFICATION: $notificationType sent to $users via $command for ${event.host}/${event.service} (State: ${isHardState ? 'HARD' : 'SOFT'})',
         level: LogLevel.info);
 
     // TODO: Store notification in database for audit trail
     // TODO: Forward notification to external systems (SMS, email, etc.)
     // TODO: Update notification dashboard
 
-    if (notificationType.contains('PROBLEM') ||
-        notificationType.contains('CRITICAL')) {
+    // Only escalate on hard state notifications
+    if (isHardState &&
+        (notificationType.contains('PROBLEM') ||
+            notificationType.contains('CRITICAL'))) {
       session.log(
-          'PROBLEM NOTIFICATION: Immediate attention required for ${event.host}/${event.service}',
+          '🚨 PROBLEM NOTIFICATION: Immediate attention required for ${event.host}/${event.service}',
           level: LogLevel.warning);
+      print(
+          '🚨 🚨 🚨 PROBLEM NOTIFICATION: ${event.host}/${event.service} needs immediate attention! 🚨 🚨 🚨');
       // TODO: Escalate to on-call duty officer
-    } else if (notificationType.contains('RECOVERY') ||
-        notificationType.contains('OK')) {
+    } else if (isHardState &&
+        (notificationType.contains('RECOVERY') ||
+            notificationType.contains('OK'))) {
       session.log(
-          'RECOVERY NOTIFICATION: ${event.host}/${event.service} has recovered',
+          '✅ RECOVERY NOTIFICATION: ${event.host}/${event.service} has recovered',
           level: LogLevel.info);
+      print(
+          '✅ ✅ ✅ RECOVERY NOTIFICATION: ${event.host}/${event.service} is back OK! ✅ ✅ ✅');
       // TODO: Clear active alerts
+    } else if (!isHardState) {
+      session.log(
+          'SOFT STATE NOTIFICATION: ${event.host}/${event.service} - $notificationType (not escalating)',
+          level: LogLevel.info);
     }
   }
 
