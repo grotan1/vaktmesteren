@@ -1,0 +1,44 @@
+services:
+  # Development services
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "8090:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: vaktmesteren
+      POSTGRES_PASSWORD: "aeqTyJ4nmTSr-up9j9rheljD0bSs7tkp"
+    volumes:
+      - vaktmesteren_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:6.2.6
+    ports:
+      - "8091:6379"
+    command: redis-server --requirepass "PyBiahS6GDo5w3oPVYEA_GNmCniF4Aqy"
+    environment:
+      - REDIS_REPLICATION_MODE=master
+
+  # Test services
+  postgres_test:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "9090:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: vaktmesteren_test
+      POSTGRES_PASSWORD: "R7g_R_bhALCJ_7ARj83GYDiWebhu2ZxC"
+    volumes:
+      - vaktmesteren_test_data:/var/lib/postgresql/data
+
+  redis_test:
+    image: redis:6.2.6
+    ports:
+      - "9091:6379"
+    command: redis-server --requirepass "0msVf5xvoXbyQGATngNNpN_TK4K4a-kl"
+    environment:
+      - REDIS_REPLICATION_MODE=master
+
+volumes:
+  vaktmesteren_data:
+  vaktmesteren_test_data:
