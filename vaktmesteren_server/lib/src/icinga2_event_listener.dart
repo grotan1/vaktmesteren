@@ -5,6 +5,7 @@ import 'package:http/io_client.dart';
 import 'package:serverpod/serverpod.dart';
 import 'icinga2_events.dart';
 import 'web/routes/log_viewer.dart';
+import 'package:vaktmesteren_server/src/generated/protocol.dart';
 
 /// Configuration class for Icinga2 connection
 class Icinga2Config {
@@ -128,6 +129,7 @@ class Icinga2EventListener {
   Timer? _reconnectTimer;
   // Track last broadcast state per canonical key (host!service) to avoid duplicate alerts
   final Map<String, int> _lastBroadcastState = {};
+  final Map<String, PersistedAlertState> _persistedStates = {};
 
   Icinga2EventListener(this.session, this.config);
 
@@ -135,9 +137,11 @@ class Icinga2EventListener {
   Future<void> start() async {
     session.log('Icinga2EventListener: Starting event listener...',
         level: LogLevel.info);
-    final startMessage = '🟢 Icinga2EventListener: Starting event listener...';
+    await _loadPersistedStates();
+    await _reconcileStatesOnStartup();
+    final startMessage = '🟢 Iicinga2EventListener: Starting event listener...';
     LogBroadcaster.broadcastLog(startMessage);
-    session.log('Starting Icinga2 event listener...', level: LogLevel.info);
+    session.log('Starting Iicinga2 event listener...', level: LogLevel.info);
 
     // Start event streaming in background (don't await) so polling can run as a fallback
     // ignore: unawaited_futures
@@ -146,17 +150,84 @@ class Icinga2EventListener {
     // No polling started - we rely on the event stream and websocket for updates.
   }
 
+  Future<void> _reconcileStatesOnStartup() async {
+    session.log('Reconciling Icinga states on startup...',
+        level: LogLevel.info);
+    try {
+      final headers = {
+        'Authorization':
+            'Basic ${base64Encode(utf8.encode('${config.username}:${config.password}'))}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+
+      final servicesUrl =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/services';
+
+      final response =
+          await _ioClient!.get(Uri.parse(servicesUrl), headers: headers);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final results = data['results'] as List;
+
+        for (final serviceData in results) {
+          final attrs = serviceData['attrs'];
+          final host = attrs['host_name'] as String;
+          final service = attrs['name'] as String;
+          final state = (attrs['state'] as num).toInt();
+          final canonicalKey = _canonicalKey(host, service);
+
+          final persistedState = _persistedStates[canonicalKey];
+          if (persistedState == null || persistedState.lastState != state) {
+            session.log(
+                'Reconciling state for $canonicalKey: persisted=${persistedState?.lastState}, icinga=$state',
+                level: LogLevel.info);
+            await _persistState(canonicalKey, host, service, state);
+          }
+        }
+        session.log('Finished reconciling ${results.length} services.',
+            level: LogLevel.info);
+      } else {
+        session.log(
+            'Failed to fetch services from Icinga for reconciliation. Status: ${response.statusCode}, Body: ${response.body}',
+            level: LogLevel.error);
+      }
+    } catch (e) {
+      session.log('Failed to reconcile Icinga states: $e',
+          level: LogLevel.error);
+    }
+  }
+
+  Future<void> _loadPersistedStates() async {
+    try {
+      final states = await PersistedAlertState.db.find(
+        session,
+        orderBy: (t) => t.lastUpdated,
+      );
+      for (final state in states) {
+        _persistedStates[state.canonicalKey] = state;
+        _lastBroadcastState[state.canonicalKey] = state.lastState;
+      }
+      session.log('Loaded ${_persistedStates.length} persisted alert states.',
+          level: LogLevel.info);
+    } catch (e) {
+      session.log('Failed to load persisted alert states: $e',
+          level: LogLevel.error);
+    }
+  }
+
   // Polling removed - no-op.
 
   // Polling code removed.
 
-  /// Connect to Icinga2 event stream
+  /// Connect to Iicinga2 event stream
   Future<void> _connect() async {
     if (_isShuttingDown) return;
 
     try {
       session.log(
-          'Icinga2EventListener: Connecting to Icinga2 at ${config.scheme}://${config.host}:${config.port}',
+          'Iicinga2EventListener: Connecting to Iicinga2 at ${config.scheme}://${config.host}:${config.port}',
           level: LogLevel.info);
 
       // Create HTTP client with SSL settings
@@ -167,7 +238,7 @@ class Icinga2EventListener {
 
       // Use IOClient to wrap the HttpClient for the http package
       _ioClient = IOClient(httpClient);
-      session.log('Icinga2EventListener: HTTP client created',
+      session.log('Iicinga2EventListener: HTTP client created',
           level: LogLevel.debug);
 
       // Prepare authentication headers
@@ -182,7 +253,7 @@ class Icinga2EventListener {
       // First, test basic connectivity and discover available endpoints
       final testUrl = '${config.scheme}://${config.host}:${config.port}/v1';
       session.log(
-          'Icinga2EventListener: Testing basic connectivity to $testUrl',
+          'Iicinga2EventListener: Testing basic connectivity to $testUrl',
           level: LogLevel.debug);
 
       final testResponse = await _ioClient!
@@ -190,21 +261,21 @@ class Icinga2EventListener {
           .timeout(Duration(seconds: 30));
 
       session.log(
-          'Icinga2EventListener: Test response status: ${testResponse.statusCode}',
+          'Iicinga2EventListener: Test response status: ${testResponse.statusCode}',
           level: LogLevel.debug);
-      session.log('Icinga2EventListener: API response: ${testResponse.body}',
+      session.log('Iicinga2EventListener: API response: ${testResponse.body}',
           level: LogLevel.debug);
 
       if (testResponse.statusCode != 200) {
         session.log(
-            'Icinga2EventListener: Basic API test failed: ${testResponse.body}',
+            'Iicinga2EventListener: Basic API test failed: ${testResponse.body}',
             level: LogLevel.error);
         throw Exception(
-            'Icinga2 API not accessible: ${testResponse.statusCode}');
+            'Iicinga2 API not accessible: ${testResponse.statusCode}');
       }
 
       // Check what endpoints are available
-      session.log('Icinga2EventListener: Checking available endpoints...',
+      session.log('Iicinga2EventListener: Checking available endpoints...',
           level: LogLevel.debug);
       final endpointsUrl =
           '${config.scheme}://${config.host}:${config.port}/v1';
@@ -213,60 +284,60 @@ class Icinga2EventListener {
           .timeout(Duration(seconds: 30));
 
       session.log(
-          'Icinga2EventListener: Available endpoints response: ${endpointsResponse.body}',
+          'Iicinga2EventListener: Available endpoints response: ${endpointsResponse.body}',
           level: LogLevel.debug);
 
       // Test other API endpoints to verify functionality
-      session.log('Icinga2EventListener: Testing other API endpoints...',
+      session.log('Iicinga2EventListener: Testing other API endpoints...',
           level: LogLevel.debug);
 
       // Test /v1/status endpoint
       final statusUrl =
           '${config.scheme}://${config.host}:${config.port}/v1/status';
-      session.log('Icinga2EventListener: Testing $statusUrl',
+      session.log('Iicinga2EventListener: Testing $statusUrl',
           level: LogLevel.debug);
       try {
         final statusResponse = await _ioClient!
             .get(Uri.parse(statusUrl), headers: headers)
             .timeout(Duration(seconds: 10));
         session.log(
-            'Icinga2EventListener: Status endpoint response: ${statusResponse.statusCode}',
+            'Iicinga2EventListener: Status endpoint response: ${statusResponse.statusCode}',
             level: LogLevel.debug);
         if (statusResponse.statusCode == 200) {
           session.log(
-              'Icinga2EventListener: Status endpoint works - API is functional',
+              'Iicinga2EventListener: Status endpoint works - API is functional',
               level: LogLevel.debug);
         }
       } catch (e) {
-        session.log('Icinga2EventListener: Status endpoint failed: $e',
+        session.log('Iicinga2EventListener: Status endpoint failed: $e',
             level: LogLevel.debug);
       }
 
       // Test /v1/objects/hosts endpoint
       final objectsUrl =
           '${config.scheme}://${config.host}:${config.port}/v1/objects/hosts';
-      session.log('Icinga2EventListener: Testing $objectsUrl',
+      session.log('Iicinga2EventListener: Testing $objectsUrl',
           level: LogLevel.debug);
       try {
         final objectsResponse = await _ioClient!
             .get(Uri.parse(objectsUrl), headers: headers)
             .timeout(Duration(seconds: 10));
         session.log(
-            'Icinga2EventListener: Objects endpoint response: ${objectsResponse.statusCode}',
+            'Iicinga2EventListener: Objects endpoint response: ${objectsResponse.statusCode}',
             level: LogLevel.debug);
         if (objectsResponse.statusCode == 200) {
           session.log(
-              'Icinga2EventListener: Objects endpoint works - API permissions are correct',
+              'Iicinga2EventListener: Objects endpoint works - API permissions are correct',
               level: LogLevel.debug);
         }
       } catch (e) {
-        session.log('Icinga2EventListener: Objects endpoint failed: $e',
+        session.log('Iicinga2EventListener: Objects endpoint failed: $e',
             level: LogLevel.debug);
       }
 
       // Try POST request to /v1/events for event streaming
       session.log(
-          'Icinga2EventListener: Attempting event stream subscription to /v1/events',
+          'Iicinga2EventListener: Attempting event stream subscription to /v1/events',
           level: LogLevel.debug);
 
       // For event streaming, we need to use HttpClient directly to access the response stream
@@ -279,7 +350,7 @@ class Icinga2EventListener {
       };
 
       session.log(
-          'Icinga2EventListener: Event stream request body: $requestBody',
+          'Iicinga2EventListener: Event stream request body: $requestBody',
           level: LogLevel.debug);
 
       // Use HttpClient directly for streaming response
@@ -297,7 +368,7 @@ class Icinga2EventListener {
         // Write the request body
         request.write(jsonEncode(requestBody));
 
-        session.log('Icinga2EventListener: Sending POST request to $eventsUrl',
+        session.log('Iicinga2EventListener: Sending POST request to $eventsUrl',
             level: LogLevel.debug);
         // Streaming endpoint can be slow to return and may be long-lived.
         // Allow a generous timeout for the initial response so transient
@@ -305,20 +376,20 @@ class Icinga2EventListener {
         final response = await request.close().timeout(Duration(seconds: 60));
 
         session.log(
-            'Icinga2EventListener: Event stream response status: ${response.statusCode}',
+            'Iicinga2EventListener: Event stream response status: ${response.statusCode}',
             level: LogLevel.debug);
         session.log(
-            'Icinga2EventListener: Event stream response headers: ${response.headers}',
+            'Iicinga2EventListener: Event stream response headers: ${response.headers}',
             level: LogLevel.debug);
 
         if (response.statusCode == 200) {
           session.log(
-              'Icinga2EventListener: Successfully connected to Icinga2 event stream',
+              'Iicinga2EventListener: Successfully connected to Iicinga2 event stream',
               level: LogLevel.info);
           final connectMessage =
-              '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
+              '🔗 Iicinga2EventListener: Successfully connected to Iicinga2 event stream';
           LogBroadcaster.broadcastLog(connectMessage);
-          session.log('Successfully connected to Icinga2 event stream',
+          session.log('Successfully connected to Iicinga2 event stream',
               level: LogLevel.info);
           _retryCount = 0;
 
@@ -326,10 +397,10 @@ class Icinga2EventListener {
           await _processEventStream(response);
         } else {
           session.log(
-              'Icinga2EventListener: Event stream connection failed: ${response.statusCode}',
+              'Iicinga2EventListener: Event stream connection failed: ${response.statusCode}',
               level: LogLevel.error);
           final responseBody = await response.transform(utf8.decoder).join();
-          session.log('Icinga2EventListener: Response body: $responseBody',
+          session.log('Iicinga2EventListener: Response body: $responseBody',
               level: LogLevel.error);
           throw Exception(
               'Event stream connection failed: HTTP ${response.statusCode}');
@@ -338,7 +409,7 @@ class Icinga2EventListener {
         streamHttpClient.close();
       }
     } catch (e) {
-      session.log('Icinga2EventListener: Failed to connect to Icinga2: $e',
+      session.log('Iicinga2EventListener: Failed to connect to Iicinga2: $e',
           level: LogLevel.error);
 
       if (config.reconnectEnabled && !_isShuttingDown) {
@@ -352,7 +423,7 @@ class Icinga2EventListener {
     if (_isShuttingDown) return;
 
     try {
-      session.log('Icinga2EventListener: Starting to process event stream...',
+      session.log('Iicinga2EventListener: Starting to process event stream...',
           level: LogLevel.debug);
 
       // Convert the response to a stream of lines
@@ -365,7 +436,7 @@ class Icinga2EventListener {
       final inactivityTimeout = Duration(minutes: 2);
       final stream = rawStream.timeout(inactivityTimeout, onTimeout: (sink) {
         session.log(
-            'Icinga2EventListener: Event stream inactive for ${inactivityTimeout.inMinutes} minutes, timing out',
+            'Iicinga2EventListener: Event stream inactive for ${inactivityTimeout.inMinutes} minutes, timing out',
             level: LogLevel.warning);
         try {
           // Record inactivity timestamp
@@ -379,7 +450,7 @@ class Icinga2EventListener {
         if (_isShuttingDown) break;
 
         if (line.trim().isNotEmpty) {
-          // Uncomment for debugging: session.log('Icinga2EventListener: Received event line: $line', level: LogLevel.debug);
+          // Uncomment for debugging: session.log('Iicinga2EventListener: Received event line: $line', level: LogLevel.debug);
           try {
             final event = jsonDecode(line);
 
@@ -393,7 +464,7 @@ class Icinga2EventListener {
             // Log all events for debugging (increased from 5 to 20)
             if (_debugEventCount < 20) {
               session.log(
-                  'Icinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}',
+                  'Iicinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}',
                   level: LogLevel.debug);
               _debugEventCount++;
             }
@@ -401,7 +472,7 @@ class Icinga2EventListener {
             // Also log every 100th event to see ongoing activity
             if (_debugEventCount % 100 == 0) {
               session.log(
-                  'Icinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}',
+                  'Iicinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}',
                   level: LogLevel.debug);
             }
 
@@ -413,12 +484,12 @@ class Icinga2EventListener {
           }
         } else {
           session.log(
-              'Icinga2EventListener: Received empty line from event stream',
+              'Iicinga2EventListener: Received empty line from event stream',
               level: LogLevel.debug);
         }
       }
 
-      session.log('Icinga2EventListener: Event stream ended',
+      session.log('Iicinga2EventListener: Event stream ended',
           level: LogLevel.info);
 
       // If the stream ended unexpectedly (not during shutdown), schedule a
@@ -430,7 +501,7 @@ class Icinga2EventListener {
         _scheduleReconnect();
       }
     } catch (e) {
-      session.log('Icinga2EventListener: Error processing event stream: $e',
+      session.log('Iicinga2EventListener: Error processing event stream: $e',
           level: LogLevel.error);
       session.log('Error processing event stream: $e', level: LogLevel.error);
 
@@ -524,6 +595,31 @@ class Icinga2EventListener {
     return '$baseHost!$svc';
   }
 
+  Future<void> _persistState(
+      String canonicalKey, String host, String? service, int state) async {
+    try {
+      var persistedState = _persistedStates[canonicalKey];
+      if (persistedState == null) {
+        persistedState = PersistedAlertState(
+          host: host,
+          service: service,
+          canonicalKey: canonicalKey,
+          lastState: state,
+          lastUpdated: DateTime.now(),
+        );
+        await PersistedAlertState.db.insertRow(session, persistedState);
+      } else {
+        persistedState.lastState = state;
+        persistedState.lastUpdated = DateTime.now();
+        await PersistedAlertState.db.updateRow(session, persistedState);
+      }
+      _persistedStates[canonicalKey] = persistedState;
+    } catch (e) {
+      session.log('Failed to persist state for $canonicalKey: $e',
+          level: LogLevel.error);
+    }
+  }
+
   /// Helper to produce a friendly host/service label without showing '/null'
   String _hostServiceLabel(String host, String? service) {
     final baseHost = host.split('.').first.toLowerCase().trim();
@@ -602,6 +698,7 @@ class Icinga2EventListener {
 
     // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
     final canonical = _canonicalKey(event.host, event.service);
+    _persistState(canonical, event.host, event.service, stateCode);
     session.log(
         'CheckResult decision for $canonical: stateCode=$stateCode exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
         level: LogLevel.debug);
@@ -718,6 +815,7 @@ class Icinga2EventListener {
 
     // Log state changes with appropriate severity - but only alert on hard states
     final canonical = _canonicalKey(event.host, event.service);
+    _persistState(canonical, event.host, event.service, event.state);
     session.log(
         'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
         level: LogLevel.debug);

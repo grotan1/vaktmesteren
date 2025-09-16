@@ -1,7 +1,0 @@
-class: PersistedAlertState
-fields:
-  host: String
-  service: String?
-  canonicalKey: String
-  lastState: int
-  lastUpdated: DateTime

@@ -22,6 +22,9 @@ void run(List<String> args) async {
 
   // Setup log viewer routes
   pod.webServer.addRoute(RouteLogViewer(), '/logs');
+  // Also register the trailing-slash variant so browsers that request '/logs/'
+  // don't receive a 404.
+  pod.webServer.addRoute(RouteLogViewer(), '/logs/');
   // SSE stream removed; use WebSocket route instead for realtime logs
   pod.webServer.addRoute(RouteLogWebSocket(), '/logs/ws');
   pod.webServer.addRoute(RouteLogPoll(), '/logs/poll');

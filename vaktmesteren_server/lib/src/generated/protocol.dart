@@ -11,6 +11,10 @@
 // ignore_for_file: no_leading_underscores_for_library_prefixes
 import 'package:serverpod/serverpod.dart' as _i1;
 import 'package:serverpod/protocol.dart' as _i2;
+import 'persisted_alert_state.dart' as _i3;
+import 'weblog.dart' as _i4;
+export 'persisted_alert_state.dart';
+export 'weblog.dart';
 
 class Protocol extends _i1.SerializationManagerServer {
   Protocol._();
@@ -20,7 +24,82 @@ class Protocol extends _i1.SerializationManagerServer {
   static final Protocol _instance = Protocol._();
 
   static final List<_i2.TableDefinition> targetTableDefinitions = [
-    ..._i2.Protocol.targetTableDefinitions
+    _i2.TableDefinition(
+      name: 'persisted_alert_state',
+      dartName: 'PersistedAlertState',
+      schema: 'public',
+      module: 'vaktmesteren',
+      columns: [
+        _i2.ColumnDefinition(
+          name: 'id',
+          columnType: _i2.ColumnType.bigint,
+          isNullable: false,
+          dartType: 'int?',
+          columnDefault: 'nextval(\'persisted_alert_state_id_seq\'::regclass)',
+        ),
+        _i2.ColumnDefinition(
+          name: 'host',
+          columnType: _i2.ColumnType.text,
+          isNullable: false,
+          dartType: 'String',
+        ),
+        _i2.ColumnDefinition(
+          name: 'service',
+          columnType: _i2.ColumnType.text,
+          isNullable: true,
+          dartType: 'String?',
+        ),
+        _i2.ColumnDefinition(
+          name: 'canonicalKey',
+          columnType: _i2.ColumnType.text,
+          isNullable: false,
+          dartType: 'String',
+        ),
+        _i2.ColumnDefinition(
+          name: 'lastState',
+          columnType: _i2.ColumnType.bigint,
+          isNullable: false,
+          dartType: 'int',
+        ),
+        _i2.ColumnDefinition(
+          name: 'lastUpdated',
+          columnType: _i2.ColumnType.timestampWithoutTimeZone,
+          isNullable: false,
+          dartType: 'DateTime',
+        ),
+      ],
+      foreignKeys: [],
+      indexes: [
+        _i2.IndexDefinition(
+          indexName: 'persisted_alert_state_pkey',
+          tableSpace: null,
+          elements: [
+            _i2.IndexElementDefinition(
+              type: _i2.IndexElementDefinitionType.column,
+              definition: 'id',
+            )
+          ],
+          type: 'btree',
+          isUnique: true,
+          isPrimary: true,
+        ),
+        _i2.IndexDefinition(
+          indexName: 'persisted_alert_state_canonical_key_idx',
+          tableSpace: null,
+          elements: [
+            _i2.IndexElementDefinition(
+              type: _i2.IndexElementDefinitionType.column,
+              definition: 'canonicalKey',
+            )
+          ],
+          type: 'btree',
+          isUnique: true,
+          isPrimary: false,
+        ),
+      ],
+      managed: true,
+    ),
+    ..._i2.Protocol.targetTableDefinitions,
   ];
 
   @override
@@ -29,6 +108,19 @@ class Protocol extends _i1.SerializationManagerServer {
     Type? t,
   ]) {
     t ??= T;
+    if (t == _i3.PersistedAlertState) {
+      return _i3.PersistedAlertState.fromJson(data) as T;
+    }
+    if (t == _i4.WebLog) {
+      return _i4.WebLog.fromJson(data) as T;
+    }
+    if (t == _i1.getType<_i3.PersistedAlertState?>()) {
+      return (data != null ? _i3.PersistedAlertState.fromJson(data) : null)
+          as T;
+    }
+    if (t == _i1.getType<_i4.WebLog?>()) {
+      return (data != null ? _i4.WebLog.fromJson(data) : null) as T;
+    }
     try {
       return _i2.Protocol().deserialize<T>(data, t);
     } on _i1.DeserializationTypeNotFoundException catch (_) {}
@@ -39,6 +131,12 @@ class Protocol extends _i1.SerializationManagerServer {
   String? getClassNameForObject(Object? data) {
     String? className = super.getClassNameForObject(data);
     if (className != null) return className;
+    if (data is _i3.PersistedAlertState) {
+      return 'PersistedAlertState';
+    }
+    if (data is _i4.WebLog) {
+      return 'WebLog';
+    }
     className = _i2.Protocol().getClassNameForObject(data);
     if (className != null) {
       return 'serverpod.$className';
@@ -51,6 +149,12 @@ class Protocol extends _i1.SerializationManagerServer {
     var dataClassName = data['className'];
     if (dataClassName is! String) {
       return super.deserializeByClassName(data);
+    }
+    if (dataClassName == 'PersistedAlertState') {
+      return deserialize<_i3.PersistedAlertState>(data['data']);
+    }
+    if (dataClassName == 'WebLog') {
+      return deserialize<_i4.WebLog>(data['data']);
     }
     if (dataClassName.startsWith('serverpod.')) {
       data['className'] = dataClassName.substring(10);
@@ -66,6 +170,10 @@ class Protocol extends _i1.SerializationManagerServer {
       if (table != null) {
         return table;
       }
+    }
+    switch (t) {
+      case _i3.PersistedAlertState:
+        return _i3.PersistedAlertState.t;
     }
     return null;
   }

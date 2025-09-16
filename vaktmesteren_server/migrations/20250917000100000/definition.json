@@ -1,0 +1,59 @@
+{
+    "tables": [
+        {
+            "name": "persisted_alert_state",
+            "dartName": "PersistedAlertState",
+            "schema": "public",
+            "columns": [
+                {
+                    "name": "id",
+                    "type": "bigint",
+                    "isNullable": false
+                },
+                {
+                    "name": "host",
+                    "type": "text",
+                    "isNullable": false
+                },
+                {
+                    "name": "service",
+                    "type": "text",
+                    "isNullable": true
+                },
+                {
+                    "name": "canonicalKey",
+                    "type": "text",
+                    "isNullable": false
+                },
+                {
+                    "name": "lastState",
+                    "type": "bigint",
+                    "isNullable": false
+                },
+                {
+                    "name": "lastUpdated",
+                    "type": "timestamp without time zone",
+                    "isNullable": false
+                }
+            ],
+            "indexes": [
+                {
+                    "indexName": "persisted_alert_state_pkey",
+                    "columns": [
+                        "id"
+                    ],
+                    "isPrimary": true,
+                    "isUnique": true
+                },
+                {
+                    "indexName": "persisted_alert_state_canonical_key_idx",
+                    "columns": [
+                        "canonicalKey"
+                    ],
+                    "isPrimary": false,
+                    "isUnique": true
+                }
+            ]
+        }
+    ]
+}

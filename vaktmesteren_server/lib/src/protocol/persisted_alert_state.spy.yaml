@@ -1,0 +1,13 @@
+class: PersistedAlertState
+table: persisted_alert_state
+fields:
+  id: int?
+  host: String
+  service: String?
+  canonicalKey: String
+  lastState: int
+  lastUpdated: DateTime
+indexes:
+  persisted_alert_state_canonical_key_idx:
+    fields: canonicalKey
+    unique: true
