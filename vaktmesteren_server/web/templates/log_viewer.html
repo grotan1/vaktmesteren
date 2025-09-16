@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{{title}}</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+      .log-container {
+        max-height: 80vh;
+        overflow-y: auto;
+        background-color: #1e1e1e;
+        color: #d4d4d4;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #333;
+      }
+
+      .log-entry {
+        margin: 2px 0;
+        padding: 2px 5px;
+        border-radius: 3px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+
+      .log-entry.error { background-color: #2d1b1b; color: #ff6b6b; }
+      .log-entry.warning { background-color: #2d2b1b; color: #ffd93d; }
+      .log-entry.info { background-color: #1b2d2b; color: #6bcf7f; }
+      .log-entry.debug { background-color: #1b1e2d; color: #74b9ff; }
+
+      .log-entry.alert-critical { background-color: #4a1a1a; color: #ff4757; font-weight: bold; }
+      .log-entry.alert-warning { background-color: #4a3a1a; color: #ffa502; font-weight: bold; }
+      .log-entry.alert-recovery { background-color: #1a4a2a; color: #2ed573; font-weight: bold; }
+      .log-entry.alert-suppressed { background-color: #2a2a4a; color: #a4b0be; font-style: italic; }
+
+      .controls {
+        margin-bottom: 10px;
+        padding: 10px;
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        border: 1px solid #dee2e6;
+      }
+
+      .status {
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-weight: bold;
+        display: inline-block;
+        margin-left: 10px;
+      }
+
+      .status.connected { background-color: #d4edda; color: #155724; }
+      .status.disconnected { background-color: #f8d7da; color: #721c24; }
+
+      .clear-btn {
+        background-color: #6c757d;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 3px;
+        cursor: pointer;
+      }
+
+      .clear-btn:hover { background-color: #5a6268; }
+
+      .timestamp {
+        color: #6c757d;
+        font-size: 10px;
+        margin-left: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="content">
+      <h1>🖥️ Vaktmesteren - Real-time Log Viewer</h1>
+      <p>Monitor Icinga2 events and system logs in real-time</p>
+
+      <div class="controls">
+        <button class="clear-btn" onclick="clearLogs()">Clear Logs</button>
+        <span class="status" id="connectionStatus">Connecting...</span>
+        <span class="timestamp" id="lastUpdate">Last update: {{timestamp}}</span>
+      </div>
+
+      <div class="log-container" id="logContainer">
+        <div class="log-entry info">🔄 Connecting to log stream...</div>
+      </div>
+    </div>
+
+    <script>
+      let eventSource;
+      let logContainer;
+      let connectionStatus;
+      let lastUpdate;
+
+      function init() {
+        logContainer = document.getElementById('logContainer');
+        connectionStatus = document.getElementById('connectionStatus');
+        lastUpdate = document.getElementById('lastUpdate');
+
+        connectToLogStream();
+      }
+
+      function connectToLogStream() {
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        eventSource = new EventSource('/logs/stream');
+
+        eventSource.onopen = function() {
+          updateConnectionStatus('connected', '🟢 Connected');
+        };
+
+        eventSource.onmessage = function(event) {
+          try {
+            const data = JSON.parse(event.data);
+            handleMessage(data);
+          } catch (e) {
+            console.error('Failed to parse message:', event.data);
+          }
+        };
+
+        eventSource.onerror = function() {
+          updateConnectionStatus('disconnected', '🔴 Disconnected - Reconnecting...');
+          setTimeout(connectToLogStream, 3000);
+        };
+      }
+
+      function handleMessage(data) {
+        if (data.type === 'connected') {
+          addLogEntry('info', '🔗 ' + data.message);
+        } else if (data.type === 'log') {
+          addLogEntry('info', data.message);
+        } else if (data.type === 'ping') {
+          // Keep-alive ping, update timestamp
+          updateTimestamp();
+        }
+      }
+
+      function addLogEntry(level, message) {
+        const entry = document.createElement('div');
+        entry.className = 'log-entry ' + level;
+
+        // Add timestamp
+        const timestamp = new Date().toLocaleTimeString();
+        entry.textContent = `[${timestamp}] ${message}`;
+
+        // Auto-scroll to bottom
+        logContainer.appendChild(entry);
+        logContainer.scrollTop = logContainer.scrollHeight;
+
+        updateTimestamp();
+      }
+
+      function updateConnectionStatus(status, text) {
+        connectionStatus.className = 'status ' + status;
+        connectionStatus.textContent = text;
+      }
+
+      function updateTimestamp() {
+        const now = new Date();
+        lastUpdate.textContent = 'Last update: ' + now.toLocaleString();
+      }
+
+      function clearLogs() {
+        logContainer.innerHTML = '<div class="log-entry info">🧹 Logs cleared</div>';
+      }
+
+      // Initialize when page loads
+      window.onload = init;
+
+      // Handle page visibility changes
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+          // Page is hidden, could pause updates if needed
+        } else {
+          // Page is visible again, ensure connection is active
+          if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+            connectToLogStream();
+          }
+        }
+      });
+    </script>
+  </body>
+</html>

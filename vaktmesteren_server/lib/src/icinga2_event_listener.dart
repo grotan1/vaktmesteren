@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:serverpod/serverpod.dart';
 import 'icinga2_events.dart';
+import 'web/routes/log_viewer.dart';
 
 /// Configuration class for Icinga2 connection
 class Icinga2Config {
@@ -134,6 +135,8 @@ class Icinga2EventListener {
   /// Start the event listener
   Future<void> start() async {
     print('Icinga2EventListener: Starting event listener...');
+    final startMessage = '🟢 Icinga2EventListener: Starting event listener...';
+    RouteLogStream.broadcastLog(startMessage);
     session.log('Starting Icinga2 event listener...', level: LogLevel.info);
 
     // Start event streaming
@@ -209,23 +212,25 @@ class Icinga2EventListener {
                 session.log(
                     '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.error);
-                print(
-                    '🚨 🚨 🚨 POLLED ALERT: Service $serviceName on integrasjoner is CRITICAL! 🚨 🚨 🚨');
-                print('   Details: ${lastCheckResult?['output'] ?? 'Unknown'}');
+                final logMessage = '🚨 POLLED CRITICAL: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
+                print(logMessage);
+                RouteLogStream.broadcastLog(logMessage);
               } else if (state == 1) {
                 // WARNING - Hard state only, not in downtime/acknowledged
                 session.log(
                     '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}',
                     level: LogLevel.warning);
-                print(
-                    '⚠️ POLLED WARNING: Service $serviceName on integrasjoner - ${lastCheckResult?['output'] ?? 'Unknown'}');
+                final logMessage = '⚠️ POLLED WARNING: integrasjoner/$serviceName - ${lastCheckResult?['output'] ?? 'Unknown'}';
+                print(logMessage);
+                RouteLogStream.broadcastLog(logMessage);
               } else if (state == 0 && previousState != null) {
                 // OK - Hard state recovery (always alert recoveries)
                 session.log(
                     '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK',
                     level: LogLevel.info);
-                print(
-                    '✅ ✅ ✅ POLLED RECOVERY: Service $serviceName on integrasjoner is back OK! ✅ ✅ ✅');
+                final logMessage = '✅ POLLED RECOVERY: integrasjoner/$serviceName is back OK';
+                print(logMessage);
+                RouteLogStream.broadcastLog(logMessage);
               }
             } else if ((previousState == null || previousState != state) &&
                 (isInDowntime || isAcknowledged)) {
@@ -244,8 +249,9 @@ class Icinga2EventListener {
               session.log(
                   'POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName changed to $stateName ($stateTypeName)',
                   level: LogLevel.info);
-              print(
-                  '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName');
+              final logMessage = '🔕 POLLED ALERT SUPPRESSED ($reason): integrasjoner/$serviceName - $stateName';
+              print(logMessage);
+              RouteLogStream.broadcastLog(logMessage);
             } else if (previousState == null || previousState != state) {
               // Log soft state changes without alerting
               final stateNames = {
@@ -413,6 +419,8 @@ class Icinga2EventListener {
         if (response.statusCode == 200) {
           print(
               'Icinga2EventListener: Successfully connected to Icinga2 event stream');
+          final connectMessage = '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
+          RouteLogStream.broadcastLog(connectMessage);
           session.log('Successfully connected to Icinga2 event stream',
               level: LogLevel.info);
           _isConnected = true;
@@ -655,23 +663,27 @@ class Icinga2EventListener {
       session.log(
           '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.error);
-      print(
-          '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
+      final logMessage = '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
+      print(logMessage);
+      RouteLogStream.broadcastLog(logMessage);
       // TODO: Trigger critical alert escalation
     } else if (event.state == 1 && shouldAlert) {
       // WARNING - Hard state only, not in downtime/acknowledged
       session.log(
           '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.warning);
-      print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
+      final logMessage = '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
+      print(logMessage);
+      RouteLogStream.broadcastLog(logMessage);
       // TODO: Send warning notification
     } else if (event.state == 0 && isHardState) {
       // OK - Hard state recovery (always alert recoveries)
       session.log(
           '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
           level: LogLevel.info);
-      print(
-          '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
+      final logMessage = '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
+      print(logMessage);
+      RouteLogStream.broadcastLog(logMessage);
       // TODO: Clear active alerts
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed alerts due to downtime/acknowledgement
@@ -679,8 +691,9 @@ class Icinga2EventListener {
       session.log(
           'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
           level: LogLevel.info);
-      print(
-          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName');
+      final logMessage = '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
+      print(logMessage);
+      RouteLogStream.broadcastLog(logMessage);
     } else {
       // Log soft states or unknown states without alerting
       session.log(
