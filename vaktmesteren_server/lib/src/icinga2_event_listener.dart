@@ -122,6 +122,7 @@ class Icinga2EventListener {
   bool _isShuttingDown = false;
   IOClient? _ioClient;
   int _debugEventCount = 0;
+  DateTime? _lastEventAt;
 
   // Polling has been removed - the event stream (and websocket) provide live updates.
   Timer? _reconnectTimer;
@@ -132,12 +133,14 @@ class Icinga2EventListener {
 
   /// Start the event listener
   Future<void> start() async {
-    print('Icinga2EventListener: Starting event listener...');
+    session.log('Icinga2EventListener: Starting event listener...',
+        level: LogLevel.info);
     final startMessage = '🟢 Icinga2EventListener: Starting event listener...';
     LogBroadcaster.broadcastLog(startMessage);
     session.log('Starting Icinga2 event listener...', level: LogLevel.info);
 
     // Start event streaming in background (don't await) so polling can run as a fallback
+    // ignore: unawaited_futures
     _connect();
 
     // No polling started - we rely on the event stream and websocket for updates.
@@ -152,10 +155,8 @@ class Icinga2EventListener {
     if (_isShuttingDown) return;
 
     try {
-      print(
-          'Icinga2EventListener: Connecting to Icinga2 at ${config.scheme}://${config.host}:${config.port}');
       session.log(
-          'Connecting to Icinga2 at ${config.scheme}://${config.host}:${config.port}',
+          'Icinga2EventListener: Connecting to Icinga2 at ${config.scheme}://${config.host}:${config.port}',
           level: LogLevel.info);
 
       // Create HTTP client with SSL settings
@@ -166,7 +167,8 @@ class Icinga2EventListener {
 
       // Use IOClient to wrap the HttpClient for the http package
       _ioClient = IOClient(httpClient);
-      print('Icinga2EventListener: HTTP client created');
+      session.log('Icinga2EventListener: HTTP client created',
+          level: LogLevel.debug);
 
       // Prepare authentication headers
       final credentials =
@@ -179,76 +181,93 @@ class Icinga2EventListener {
 
       // First, test basic connectivity and discover available endpoints
       final testUrl = '${config.scheme}://${config.host}:${config.port}/v1';
-      print('Icinga2EventListener: Testing basic connectivity to $testUrl');
+      session.log(
+          'Icinga2EventListener: Testing basic connectivity to $testUrl',
+          level: LogLevel.debug);
 
       final testResponse = await _ioClient!
           .get(Uri.parse(testUrl), headers: headers)
-          .timeout(Duration(seconds: 10));
+          .timeout(Duration(seconds: 30));
 
-      print(
-          'Icinga2EventListener: Test response status: ${testResponse.statusCode}');
-      print('Icinga2EventListener: API response: ${testResponse.body}');
+      session.log(
+          'Icinga2EventListener: Test response status: ${testResponse.statusCode}',
+          level: LogLevel.debug);
+      session.log('Icinga2EventListener: API response: ${testResponse.body}',
+          level: LogLevel.debug);
 
       if (testResponse.statusCode != 200) {
-        print(
-            'Icinga2EventListener: Basic API test failed: ${testResponse.body}');
+        session.log(
+            'Icinga2EventListener: Basic API test failed: ${testResponse.body}',
+            level: LogLevel.error);
         throw Exception(
             'Icinga2 API not accessible: ${testResponse.statusCode}');
       }
 
       // Check what endpoints are available
-      print('Icinga2EventListener: Checking available endpoints...');
+      session.log('Icinga2EventListener: Checking available endpoints...',
+          level: LogLevel.debug);
       final endpointsUrl =
           '${config.scheme}://${config.host}:${config.port}/v1';
       final endpointsResponse = await _ioClient!
           .get(Uri.parse(endpointsUrl), headers: headers)
-          .timeout(Duration(seconds: 10));
+          .timeout(Duration(seconds: 30));
 
-      print(
-          'Icinga2EventListener: Available endpoints response: ${endpointsResponse.body}');
+      session.log(
+          'Icinga2EventListener: Available endpoints response: ${endpointsResponse.body}',
+          level: LogLevel.debug);
 
       // Test other API endpoints to verify functionality
-      print('Icinga2EventListener: Testing other API endpoints...');
+      session.log('Icinga2EventListener: Testing other API endpoints...',
+          level: LogLevel.debug);
 
       // Test /v1/status endpoint
       final statusUrl =
           '${config.scheme}://${config.host}:${config.port}/v1/status';
-      print('Icinga2EventListener: Testing $statusUrl');
+      session.log('Icinga2EventListener: Testing $statusUrl',
+          level: LogLevel.debug);
       try {
         final statusResponse = await _ioClient!
             .get(Uri.parse(statusUrl), headers: headers)
-            .timeout(Duration(seconds: 5));
-        print(
-            'Icinga2EventListener: Status endpoint response: ${statusResponse.statusCode}');
+            .timeout(Duration(seconds: 10));
+        session.log(
+            'Icinga2EventListener: Status endpoint response: ${statusResponse.statusCode}',
+            level: LogLevel.debug);
         if (statusResponse.statusCode == 200) {
-          print(
-              'Icinga2EventListener: Status endpoint works - API is functional');
+          session.log(
+              'Icinga2EventListener: Status endpoint works - API is functional',
+              level: LogLevel.debug);
         }
       } catch (e) {
-        print('Icinga2EventListener: Status endpoint failed: $e');
+        session.log('Icinga2EventListener: Status endpoint failed: $e',
+            level: LogLevel.debug);
       }
 
       // Test /v1/objects/hosts endpoint
       final objectsUrl =
           '${config.scheme}://${config.host}:${config.port}/v1/objects/hosts';
-      print('Icinga2EventListener: Testing $objectsUrl');
+      session.log('Icinga2EventListener: Testing $objectsUrl',
+          level: LogLevel.debug);
       try {
         final objectsResponse = await _ioClient!
             .get(Uri.parse(objectsUrl), headers: headers)
-            .timeout(Duration(seconds: 5));
-        print(
-            'Icinga2EventListener: Objects endpoint response: ${objectsResponse.statusCode}');
+            .timeout(Duration(seconds: 10));
+        session.log(
+            'Icinga2EventListener: Objects endpoint response: ${objectsResponse.statusCode}',
+            level: LogLevel.debug);
         if (objectsResponse.statusCode == 200) {
-          print(
-              'Icinga2EventListener: Objects endpoint works - API permissions are correct');
+          session.log(
+              'Icinga2EventListener: Objects endpoint works - API permissions are correct',
+              level: LogLevel.debug);
         }
       } catch (e) {
-        print('Icinga2EventListener: Objects endpoint failed: $e');
+        session.log('Icinga2EventListener: Objects endpoint failed: $e',
+            level: LogLevel.debug);
       }
 
       // Try POST request to /v1/events for event streaming
-      print(
-          'Icinga2EventListener: Attempting event stream subscription to /v1/events');
+      session.log(
+          'Icinga2EventListener: Attempting event stream subscription to /v1/events',
+          level: LogLevel.debug);
 
       // For event streaming, we need to use HttpClient directly to access the response stream
       final eventsUrl = Uri.parse(
@@ -259,7 +278,9 @@ class Icinga2EventListener {
         if (config.filter.isNotEmpty) 'filter': config.filter,
       };
 
-      print('Icinga2EventListener: Event stream request body: $requestBody');
+      session.log(
+          'Icinga2EventListener: Event stream request body: $requestBody',
+          level: LogLevel.debug);
 
       // Use HttpClient directly for streaming response
       final streamHttpClient = HttpClient();
@@ -276,17 +297,24 @@ class Icinga2EventListener {
         // Write the request body
         request.write(jsonEncode(requestBody));
 
-        print('Icinga2EventListener: Sending POST request to $eventsUrl');
-        final response = await request.close().timeout(Duration(seconds: 10));
+        session.log('Icinga2EventListener: Sending POST request to $eventsUrl',
+            level: LogLevel.debug);
+        // Streaming endpoint can be slow to return and may be long-lived.
+        // Allow a generous timeout for the initial response so transient
+        // network latency doesn't cause frequent reconnects.
+        final response = await request.close().timeout(Duration(seconds: 60));
 
-        print(
-            'Icinga2EventListener: Event stream response status: ${response.statusCode}');
-        print(
-            'Icinga2EventListener: Event stream response headers: ${response.headers}');
+        session.log(
+            'Icinga2EventListener: Event stream response status: ${response.statusCode}',
+            level: LogLevel.debug);
+        session.log(
+            'Icinga2EventListener: Event stream response headers: ${response.headers}',
+            level: LogLevel.debug);
 
         if (response.statusCode == 200) {
-          print(
-              'Icinga2EventListener: Successfully connected to Icinga2 event stream');
+          session.log(
+              'Icinga2EventListener: Successfully connected to Icinga2 event stream',
+              level: LogLevel.info);
           final connectMessage =
               '🔗 Icinga2EventListener: Successfully connected to Icinga2 event stream';
           LogBroadcaster.broadcastLog(connectMessage);
@@ -297,10 +325,12 @@ class Icinga2EventListener {
           // Process the event stream
           await _processEventStream(response);
         } else {
-          print(
-              'Icinga2EventListener: Event stream connection failed: ${response.statusCode}');
+          session.log(
+              'Icinga2EventListener: Event stream connection failed: ${response.statusCode}',
+              level: LogLevel.error);
           final responseBody = await response.transform(utf8.decoder).join();
-          print('Icinga2EventListener: Response body: $responseBody');
+          session.log('Icinga2EventListener: Response body: $responseBody',
+              level: LogLevel.error);
           throw Exception(
               'Event stream connection failed: HTTP ${response.statusCode}');
         }
@@ -308,8 +338,8 @@ class Icinga2EventListener {
         streamHttpClient.close();
       }
     } catch (e) {
-      print('Icinga2EventListener: Failed to connect to Icinga2: $e');
-      session.log('Failed to connect to Icinga2: $e', level: LogLevel.error);
+      session.log('Icinga2EventListener: Failed to connect to Icinga2: $e',
+          level: LogLevel.error);
 
       if (config.reconnectEnabled && !_isShuttingDown) {
         _scheduleReconnect();
@@ -322,49 +352,74 @@ class Icinga2EventListener {
     if (_isShuttingDown) return;
 
     try {
-      print('Icinga2EventListener: Starting to process event stream...');
+      session.log('Icinga2EventListener: Starting to process event stream...',
+          level: LogLevel.debug);
 
       // Convert the response to a stream of lines
-      final stream = response.transform(utf8.decoder).transform(LineSplitter());
+      final rawStream =
+          response.transform(utf8.decoder).transform(LineSplitter());
+
+      // Wrap the stream with an inactivity timeout so we detect stalled
+      // connections. If no data arrives for [inactivityTimeout], the
+      // subscription will be cancelled and we schedule a reconnect.
+      final inactivityTimeout = Duration(minutes: 2);
+      final stream = rawStream.timeout(inactivityTimeout, onTimeout: (sink) {
+        session.log(
+            'Icinga2EventListener: Event stream inactive for ${inactivityTimeout.inMinutes} minutes, timing out',
+            level: LogLevel.warning);
+        try {
+          // Record inactivity timestamp
+          _lastEventAt = DateTime.now();
+          // Close the sink to break the await-for loop
+          sink.close();
+        } catch (_) {}
+      });
 
       await for (final line in stream) {
         if (_isShuttingDown) break;
 
         if (line.trim().isNotEmpty) {
-          // Uncomment for debugging: print('Icinga2EventListener: Received event line: $line');
+          // Uncomment for debugging: session.log('Icinga2EventListener: Received event line: $line', level: LogLevel.debug);
           try {
             final event = jsonDecode(line);
 
             // Special debugging for integrasjoner events
             if (event['host'] == 'integrasjoner') {
-              print(
-                  '🎯 INTEGRASJONER EVENT RECEIVED: ${event['type']} for ${event['host']}/${event['service']}');
+              session.log(
+                  '🎯 INTEGRASJONER EVENT RECEIVED: ${event['type']} for ${event['host']}/${event['service']}',
+                  level: LogLevel.debug);
             }
 
             // Log all events for debugging (increased from 5 to 20)
             if (_debugEventCount < 20) {
-              print(
-                  'Icinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}');
+              session.log(
+                  'Icinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}',
+                  level: LogLevel.debug);
               _debugEventCount++;
             }
 
             // Also log every 100th event to see ongoing activity
             if (_debugEventCount % 100 == 0) {
-              print(
-                  'Icinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}');
+              session.log(
+                  'Icinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}',
+                  level: LogLevel.debug);
             }
 
+            _lastEventAt = DateTime.now();
             _handleEvent(event);
           } catch (e) {
             session.log('Failed to parse event: $e', level: LogLevel.warning);
             session.log('Raw event data: $line', level: LogLevel.debug);
           }
         } else {
-          print('Icinga2EventListener: Received empty line from event stream');
+          session.log(
+              'Icinga2EventListener: Received empty line from event stream',
+              level: LogLevel.debug);
         }
       }
 
-      print('Icinga2EventListener: Event stream ended');
+      session.log('Icinga2EventListener: Event stream ended',
+          level: LogLevel.info);
 
       // If the stream ended unexpectedly (not during shutdown), schedule a
       // reconnect so we resume listening automatically. This prevents the
@@ -375,7 +430,8 @@ class Icinga2EventListener {
         _scheduleReconnect();
       }
     } catch (e) {
-      print('Icinga2EventListener: Error processing event stream: $e');
+      session.log('Icinga2EventListener: Error processing event stream: $e',
+          level: LogLevel.error);
       session.log('Error processing event stream: $e', level: LogLevel.error);
 
       // Reconnection will be scheduled below if configured.
@@ -454,7 +510,7 @@ class Icinga2EventListener {
     // Normalize host (lowercase, strip domain) before comparing so
     // events from e.g. "integrasjoner.example.local" or different
     // case variants still match the intended host.
-  final baseHost = host.split('.').first.toLowerCase().trim();
+    final baseHost = host.split('.').first.toLowerCase().trim();
     return baseHost == 'integrasjoner';
   }
 
@@ -463,9 +519,19 @@ class Icinga2EventListener {
     // Normalize host and service parts so the same logical service maps
     // to a single canonical key even if host/service casing or domain
     // suffixes differ between events.
-  final baseHost = host.split('.').first.toLowerCase().trim();
+    final baseHost = host.split('.').first.toLowerCase().trim();
     final svc = service?.toLowerCase().trim() ?? '';
     return '$baseHost!$svc';
+  }
+
+  /// Helper to produce a friendly host/service label without showing '/null'
+  String _hostServiceLabel(String host, String? service) {
+    final baseHost = host.split('.').first.toLowerCase().trim();
+    if (service == null || service.toString().trim().isEmpty) {
+      return baseHost;
+    }
+    final svc = service.toString().trim();
+    return '$baseHost/$svc';
   }
 
   /// Return true if we should broadcast this state for the given key.
@@ -478,7 +544,8 @@ class Icinga2EventListener {
           level: LogLevel.debug);
       return false;
     }
-    session.log('Broadcasting for $key: state changed ${last ?? 'null'} -> $state',
+    session.log(
+        'Broadcasting for $key: state changed ${last ?? 'null'} -> $state',
         level: LogLevel.debug);
     _lastBroadcastState[key] = state;
     return true;
@@ -491,9 +558,35 @@ class Icinga2EventListener {
   /// Handle check result events
   void _handleCheckResult(CheckResultEvent event) {
     // Process check result based on state and exit code
-    final state = event.checkResult['state'] ?? 'UNKNOWN';
+    final rawState = event.checkResult['state'];
     final exitCode = event.checkResult['exit_code'] ?? -1;
     final output = event.checkResult['output'] ?? '';
+
+    // Determine numeric state code robustly: accept numeric codes or string names
+    int stateCode;
+    if (rawState is num) {
+      stateCode = rawState.toInt();
+    } else if (rawState is String) {
+      switch (rawState.toUpperCase()) {
+        case 'OK':
+          stateCode = 0;
+          break;
+        case 'WARNING':
+          stateCode = 1;
+          break;
+        case 'CRITICAL':
+          stateCode = 2;
+          break;
+        case 'UNKNOWN':
+        default:
+          stateCode = 3;
+      }
+    } else {
+      // Fallback to exitCode if state not provided
+      stateCode = (exitCode >= 0)
+          ? (exitCode == 2 ? 2 : (exitCode == 1 ? 1 : (exitCode == 0 ? 0 : 3)))
+          : 3;
+    }
 
     // Check if this is a hard state (state_type == 1) - if not available, assume hard for critical
     final stateType =
@@ -507,79 +600,89 @@ class Icinga2EventListener {
     // Don't alert if in downtime or acknowledged
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
-  // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
-  final canonical = _canonicalKey(event.host, event.service);
-  // Diagnostic logging to help debug missed broadcasts where an OK recovery
-  // is observed but later ALERTs aren't emitted. This prints host/service
-  // canonicalization and decision flags.
-  session.log(
-    'CheckResult decision for $canonical: state=$state exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
-    level: LogLevel.debug);
-    if ((state == 'CRITICAL' || exitCode == 2) && shouldAlert) {
-      session.log('🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output',
+    // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
+    final canonical = _canonicalKey(event.host, event.service);
+    session.log(
+        'CheckResult decision for $canonical: stateCode=$stateCode exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
+        level: LogLevel.debug);
+
+    if (stateCode == 2 && shouldAlert) {
+      session.log(
+          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.error);
-      print(
-          '🚨 🚨 🚨 ALERT: Service ${event.service} on ${event.host} is CRITICAL! 🚨 🚨 🚨');
+      session.log(
+          'ALERT: Service ${event.service} on ${event.host} is CRITICAL!',
+          level: LogLevel.error);
       // TODO: Send critical alert to duty officer
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
       } else if (_shouldBroadcastForKey(canonical, 2)) {
         LogBroadcaster.broadcastLog(
-            '🚨 ALERT CRITICAL: ${event.host}/${event.service} - $output');
+            '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output');
       }
-    } else if ((state == 'WARNING' || exitCode == 1) && shouldAlert) {
-      session.log('⚠️ ALERT WARNING: ${event.host}/${event.service} - $output',
+    } else if (stateCode == 1 && shouldAlert) {
+      session.log(
+          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.warning);
-      print('⚠️ ALERT: Service ${event.service} on ${event.host} is WARNING');
+      session.log('ALERT: Service ${event.service} on ${event.host} is WARNING',
+          level: LogLevel.warning);
       // TODO: Send warning notification
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
       } else if (_shouldBroadcastForKey(canonical, 1)) {
         LogBroadcaster.broadcastLog(
-            '⚠️ ALERT WARNING: ${event.host}/${event.service} - $output');
+            '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output');
       }
-    } else if (state == 'OK' || exitCode == 0) {
-      session.log('✅ ALERT RECOVERY: ${event.host}/${event.service} - $output',
+    } else if (stateCode == 0) {
+      // OK recovery: always log and broadcast recoveries
+      // For recoveries, do not include plugin/check output (may contain secrets).
+      session.log(
+          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)}',
           level: LogLevel.info);
-      print(
-          '✅ ✅ ✅ RECOVERY: Service ${event.service} on ${event.host} is back OK! ✅ ✅ ✅');
-  if (!_shouldBroadcastForHost(event.host)) {
-    session.log('Skipping broadcast for $canonical: host filter mismatch',
-    level: LogLevel.debug);
-  } else if (_shouldBroadcastForKey(canonical, 0)) {
-    LogBroadcaster.broadcastLog(
-    '✅ ALERT RECOVERY: ${event.host}/${event.service} - $output');
-  }
+      session.log(
+          'RECOVERY: Service ${event.service} on ${event.host} is back OK',
+          level: LogLevel.info);
+      if (!_shouldBroadcastForHost(event.host)) {
+        session.log('Skipping broadcast for $canonical: host filter mismatch',
+            level: LogLevel.debug);
+      } else if (_shouldBroadcastForKey(canonical, 0)) {
+        LogBroadcaster.broadcastLog(
+            '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)}');
+      }
 
-  // Ensure we record the recovery state so subsequent alerts are
-  // recognized. If the recovery was not broadcast for some reason
-  // (soft state, suppression, etc.), updating the last state here
-  // prevents the previous ALERT state from blocking future alerts.
-  try {
-    _lastBroadcastState[canonical] = 0;
-    session.log('Recorded recovery state for $canonical -> 0',
-    level: LogLevel.debug);
-  } catch (_) {}
+      // Ensure we record the recovery state so subsequent alerts are
+      // recognized. If the recovery was not broadcast for some reason
+      // (soft state, suppression, etc.), updating the last state here
+      // prevents the previous ALERT state from blocking future alerts.
+      try {
+        _lastBroadcastState[canonical] = 0;
+        session.log('Recorded recovery state for $canonical -> 0',
+            level: LogLevel.debug);
+      } catch (_) {}
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed alerts due to downtime/acknowledgement
       final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
       session.log(
-          'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $output',
+          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.info);
-      print(
-          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $state');
-    } else if ((state == 'CRITICAL' || exitCode == 2) && !isHardState) {
+      session.log(
+          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $stateCode',
+          level: LogLevel.info);
+    } else if (stateCode == 2 && !isHardState) {
       // Log soft critical states without alerting
-      session.log('SOFT CRITICAL: ${event.host}/${event.service} - $output',
+      session.log(
+          'SOFT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.warning);
-    } else if ((state == 'WARNING' || exitCode == 1) && !isHardState) {
+    } else if (stateCode == 1 && !isHardState) {
       // Log soft warning states without alerting
-      session.log('SOFT WARNING: ${event.host}/${event.service} - $output',
+      session.log(
+          'SOFT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.info);
     } else {
-      session.log('UNKNOWN: ${event.host}/${event.service} - $output',
+      session.log(
+          'UNKNOWN: ${_hostServiceLabel(event.host, event.service)} - $output',
           level: LogLevel.warning);
     }
 
@@ -614,18 +717,18 @@ class Icinga2EventListener {
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
     // Log state changes with appropriate severity - but only alert on hard states
-  final canonical = _canonicalKey(event.host, event.service);
-  session.log(
-    'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
-    level: LogLevel.debug);
+    final canonical = _canonicalKey(event.host, event.service);
+    session.log(
+        'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
+        level: LogLevel.debug);
     if (event.state == 2 && shouldAlert) {
       // CRITICAL - Hard state only, not in downtime/acknowledged
       session.log(
-          '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
           level: LogLevel.error);
       final logMessage =
-          '🚨 ALERT CRITICAL: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
-      print(logMessage);
+          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
+      session.log(logMessage, level: LogLevel.error);
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
@@ -636,11 +739,11 @@ class Icinga2EventListener {
     } else if (event.state == 1 && shouldAlert) {
       // WARNING - Hard state only, not in downtime/acknowledged
       session.log(
-          '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
           level: LogLevel.warning);
       final logMessage =
-          '⚠️ ALERT WARNING: ${event.host}/${event.service} changed to $stateName ($stateTypeName)';
-      print(logMessage);
+          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
+      session.log(logMessage, level: LogLevel.warning);
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
@@ -651,11 +754,11 @@ class Icinga2EventListener {
     } else if (event.state == 0 && isHardState) {
       // OK - Hard state recovery (always alert recoveries)
       session.log(
-          '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)',
+          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)} recovered to $stateName ($stateTypeName)',
           level: LogLevel.info);
       final logMessage =
-          '✅ ALERT RECOVERY: ${event.host}/${event.service} recovered to $stateName ($stateTypeName)';
-      print(logMessage);
+          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)} recovered to $stateName ($stateTypeName)';
+      session.log(logMessage, level: LogLevel.info);
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
@@ -667,11 +770,11 @@ class Icinga2EventListener {
       // Log suppressed alerts due to downtime/acknowledgement
       final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
       session.log(
-          'ALERT SUPPRESSED ($reason): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
           level: LogLevel.info);
       final logMessage =
-          '🔕 ALERT SUPPRESSED ($reason): ${event.host}/${event.service} - $stateName';
-      print(logMessage);
+          '🔕 ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $stateName';
+      session.log(logMessage, level: LogLevel.info);
       if (!_shouldBroadcastForHost(event.host)) {
         session.log('Skipping broadcast for $canonical: host filter mismatch',
             level: LogLevel.debug);
@@ -681,7 +784,7 @@ class Icinga2EventListener {
     } else {
       // Log soft states or unknown states without alerting
       session.log(
-          'STATE CHANGE (Soft): ${event.host}/${event.service} changed to $stateName ($stateTypeName)',
+          'STATE CHANGE (Soft): ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
           level: LogLevel.info);
     }
 
@@ -709,7 +812,7 @@ class Icinga2EventListener {
     final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
 
     session.log(
-        'NOTIFICATION: $notificationType sent to $users via $command for ${event.host}/${event.service} (State: ${isHardState ? 'HARD' : 'SOFT'})',
+        'NOTIFICATION: $notificationType sent to $users via $command for ${_hostServiceLabel(event.host, event.service)} (State: ${isHardState ? 'HARD' : 'SOFT'})',
         level: LogLevel.info);
 
     // TODO: Store notification in database for audit trail
@@ -721,31 +824,34 @@ class Icinga2EventListener {
         (notificationType.contains('PROBLEM') ||
             notificationType.contains('CRITICAL'))) {
       session.log(
-          '🚨 PROBLEM NOTIFICATION: Immediate attention required for ${event.host}/${event.service}',
+          '🚨 PROBLEM NOTIFICATION: Immediate attention required for ${_hostServiceLabel(event.host, event.service)}',
           level: LogLevel.warning);
-      print(
-          '🚨 🚨 🚨 PROBLEM NOTIFICATION: ${event.host}/${event.service} needs immediate attention! 🚨 🚨 🚨');
+      session.log(
+          'PROBLEM NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} needs immediate attention!',
+          level: LogLevel.warning);
       // TODO: Escalate to on-call duty officer
     } else if (shouldAlert &&
         (notificationType.contains('RECOVERY') ||
             notificationType.contains('OK'))) {
       session.log(
-          '✅ RECOVERY NOTIFICATION: ${event.host}/${event.service} has recovered',
+          '✅ RECOVERY NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} has recovered',
           level: LogLevel.info);
-      print(
-          '✅ ✅ ✅ RECOVERY NOTIFICATION: ${event.host}/${event.service} is back OK! ✅ ✅ ✅');
+      session.log(
+          'RECOVERY NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} is back OK',
+          level: LogLevel.info);
       // TODO: Clear active alerts
     } else if (isInDowntime || isAcknowledged) {
       // Log suppressed notifications due to downtime/acknowledgement
       final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
       session.log(
-          'NOTIFICATION SUPPRESSED ($reason): $notificationType for ${event.host}/${event.service}',
+          'NOTIFICATION SUPPRESSED ($reason): $notificationType for ${_hostServiceLabel(event.host, event.service)}',
           level: LogLevel.info);
-      print(
-          '🔕 NOTIFICATION SUPPRESSED ($reason): ${event.host}/${event.service} - $notificationType');
+      session.log(
+          'NOTIFICATION SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $notificationType',
+          level: LogLevel.info);
     } else if (!isHardState) {
       session.log(
-          'SOFT STATE NOTIFICATION: ${event.host}/${event.service} - $notificationType (not escalating)',
+          'SOFT STATE NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} - $notificationType (not escalating)',
           level: LogLevel.info);
     }
   }
@@ -756,7 +862,7 @@ class Icinga2EventListener {
     final comment = event.comment;
 
     session.log(
-        'ACKNOWLEDGEMENT SET: ${event.host}/${event.service} acknowledged by $author: $comment',
+        'ACKNOWLEDGEMENT SET: ${_hostServiceLabel(event.host, event.service)} acknowledged by $author: $comment',
         level: LogLevel.info);
 
     // TODO: Store acknowledgement in database
@@ -768,7 +874,7 @@ class Icinga2EventListener {
   /// Handle acknowledgement cleared events
   void _handleAcknowledgementCleared(AcknowledgementClearedEvent event) {
     session.log(
-        'ACKNOWLEDGEMENT CLEARED: ${event.host}/${event.service} acknowledgement removed',
+        'ACKNOWLEDGEMENT CLEARED: ${_hostServiceLabel(event.host, event.service)} acknowledgement removed',
         level: LogLevel.info);
 
     // TODO: Update incident management system
@@ -859,13 +965,23 @@ class Icinga2EventListener {
     }
 
     _retryCount++;
-    final delay = config.reconnectDelay * _retryCount; // Exponential backoff
+    // Exponential backoff with cap and jitter
+    final base = config.reconnectDelay; // base seconds
+    final maxDelay = 300; // cap at 5 minutes
+    var delaySeconds = base * (1 << (_retryCount - 1));
+    if (delaySeconds > maxDelay) delaySeconds = maxDelay;
+    // add jitter +/- 20%
+    final jitterRange = (delaySeconds * 0.2).toInt();
+    final jitter =
+        (DateTime.now().millisecondsSinceEpoch % (jitterRange * 2 + 1)) -
+            jitterRange;
+    delaySeconds = (delaySeconds + jitter).clamp(1, maxDelay);
 
     session.log(
-        'Scheduling reconnection attempt $_retryCount in $delay seconds',
+        'Scheduling reconnection attempt $_retryCount in $delaySeconds seconds (lastEventAt=${_lastEventAt?.toIso8601String() ?? 'never'})',
         level: LogLevel.info);
 
-    _reconnectTimer = Timer(Duration(seconds: delay), () {
+    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
       if (!_isShuttingDown) {
         _connect();
       }

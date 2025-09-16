@@ -21,33 +21,40 @@ class LogBroadcaster {
 
   static void _addSubscriber() {
     _subscriberCount++;
-    try {
-      print('LogBroadcaster: subscriber connected, total=$_subscriberCount');
-    } catch (_) {}
+    // Subscriber counting kept for diagnostics; prefer session logging when
+    // available at call sites. Silent here to avoid global prints.
   }
 
   static void _removeSubscriber() {
     if (_subscriberCount > 0) _subscriberCount--;
-    try {
-      print('LogBroadcaster: subscriber disconnected, total=$_subscriberCount');
-    } catch (_) {}
+    // Silent - use session.log at call sites for structured logging.
   }
 
   // Keep a small in-memory buffer of recent logs so the polling endpoint
   // can return something useful if needed.
   static final List<String> _recentLogs = <String>[];
   static const int _recentLogsMax = 200;
+  // Serverpod instance used for creating sessions to persist logs.
+  // Persistence will be wired after generated ORM is available.
+
+  /// Initialize the broadcaster's persistence using Serverpod's DB.
+  /// This will create the persistence table if missing and load the most
+  /// recent non-transient log messages into the in-memory buffer.
+  static Future<void> init(Serverpod pod) async {
+    // Persisted storage will be wired up using Serverpod's ORM once the
+    // `PersistedAlertState`/`WebLog` models are generated via
+    // `serverpod generate` and migrations have been applied. Until then,
+    // keep the in-memory recent buffer active and skip direct SQL.
+    // TODO: Load persisted logs using generated ORM here.
+  }
 
   static void broadcastLog(String message) {
     // Add to stream
     _logController.add(message);
 
     // Log to console for easier debugging
-    try {
-      final preview =
-          message.length > 120 ? message.substring(0, 120) + '...' : message;
-      print('Broadcasting log to buffer: ${preview}');
-    } catch (_) {}
+    // Intentionally no console printing here; use session.log where a
+    // Session is available to avoid analyzer avoid_print warnings.
 
     // Maintain recent logs buffer
     try {
@@ -58,6 +65,14 @@ class LogBroadcaster {
     } catch (e) {
       // ignore errors in buffer maintenance
     }
+
+    // Persist to DB if initialized. Use a background session per-insert so
+    // we don't depend on any particular request session lifetime.
+    // Persistence via Serverpod ORM is disabled until generated models are
+    // available. This avoids using raw SQL APIs that vary between Serverpod
+    // versions and prevents analyzer errors. After running
+    // `serverpod generate` and applying migrations, implement ORM-based
+    // inserts here.
   }
 
   /// Broadcast a transient message to currently connected clients without
@@ -67,11 +82,7 @@ class LogBroadcaster {
     try {
       _logController.add(message);
     } catch (_) {}
-    try {
-      final preview =
-          message.length > 120 ? message.substring(0, 120) + '...' : message;
-      print('Broadcasting transient log: ${preview}');
-    } catch (_) {}
+    // No direct printing here; call sites may log via session.
   }
 }
 
@@ -96,8 +107,9 @@ class RouteLogPoll extends Route {
     }
 
     try {
-      print(
-          'RouteLogPoll: returning ${LogBroadcaster._recentLogs.length} recent logs');
+      session.log(
+          'RouteLogPoll: returning ${LogBroadcaster._recentLogs.length} recent logs',
+          level: LogLevel.debug);
       final payload = {'logs': List<String>.from(LogBroadcaster._recentLogs)};
       request.response.write(jsonEncode(payload));
       await request.response.close();
@@ -130,7 +142,7 @@ class RouteLogTest extends Route {
     } catch (e) {
       try {
         request.response.statusCode = 500;
-        request.response.write('Error: ' + e.toString());
+        request.response.write('Error: $e');
         await request.response.close();
       } catch (_) {}
       return true;
@@ -162,7 +174,25 @@ class RouteLogWebSocket extends Route {
       final socket = await WebSocketTransformer.upgrade(request);
       final remote = request.connectionInfo?.remoteAddress.address ?? 'unknown';
       final port = request.connectionInfo?.remotePort ?? 0;
-      print('WebSocket: New connection from $remote:$port');
+
+      // Use a safe logger wrapper for long-lived async callbacks so we don't
+      // attempt to log on the original request Session after it has been
+      // closed by Serverpod. session.log can throw if the session is closed,
+      // so we catch and fallback to stderr to avoid unhandled zone errors.
+      void safeLog(String message, {LogLevel level = LogLevel.info}) {
+        try {
+          session.log(message, level: level);
+        } catch (_) {
+          try {
+            stderr.writeln(message);
+          } catch (_) {
+            // ignore
+          }
+        }
+      }
+
+      safeLog('WebSocket: New connection from $remote:$port',
+          level: LogLevel.info);
 
       // Track subscribers for debugging
       LogBroadcaster._addSubscriber();
@@ -185,17 +215,21 @@ class RouteLogWebSocket extends Route {
           LogBroadcaster._logController.stream.listen((message) {
         try {
           final preview = (message.length > 200)
-              ? message.substring(0, 200) + '...'
+              ? '${message.substring(0, 200)}...'
               : message;
-          print('WebSocket: Sending log to client (preview): ${preview}');
+          safeLog('WebSocket: Sending log to client (preview): $preview',
+              level: LogLevel.debug);
           socket.add(jsonEncode({'type': 'log', 'message': message}));
         } catch (e) {
-          print('WebSocket: Error sending message: $e');
+          safeLog('WebSocket: Error sending message: $e',
+              level: LogLevel.error);
         }
       });
 
+      // ignore: unawaited_futures
       socket.done.then((_) {
-        print('WebSocket: Client disconnected from $remote:$port');
+        safeLog('WebSocket: Client disconnected from $remote:$port',
+            level: LogLevel.info);
         try {
           subscription.cancel();
         } catch (_) {}
@@ -205,7 +239,7 @@ class RouteLogWebSocket extends Route {
 
       return true;
     } catch (e) {
-      print('WebSocket: Upgrade failed: $e');
+      session.log('WebSocket: Upgrade failed: $e', level: LogLevel.error);
       try {
         request.response.statusCode = 500;
         await request.response.close();

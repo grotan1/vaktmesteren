@@ -1,0 +1,5 @@
+class: WebLog
+fields:
+  createdAt: DateTime
+  message: String
+  transient: bool
