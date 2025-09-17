@@ -1,0 +1,15 @@
+class: AlertHistory
+table: alert_history
+fields:
+  id: int?
+  host: String
+  service: String?
+  canonicalKey: String
+  state: int
+  message: String?
+  createdAt: DateTime
+indexes:
+  alert_history_canonical_idx:
+    fields: canonicalKey
+  alert_history_created_at_idx:
+    fields: createdAt

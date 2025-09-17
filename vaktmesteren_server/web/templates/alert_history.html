@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{title}}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f1724;
+            --panel: #0b1220;
+            --muted: #94a3b8;
+            --accent: #7c5cff;
+            --danger: #ff6b6b;
+            --ok: #38bdf8;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+            margin: 0;
+            background: linear-gradient(180deg, var(--bg), #071022);
+            color: #e6eef8;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 24px auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .btn {
+            background: var(--accent);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+        }
+
+        .panel {
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            padding: 12px;
+            border-radius: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        th {
+            font-weight: 600;
+        }
+
+        .small {
+            font-size: 13px;
+            color: var(--muted);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>{{title}}</h1>
+                <div class="small">Persisted alert history (last X days)</div>
+            </div>
+            <div class="controls">
+                <button class="btn" id="btnRefresh">Refresh</button>
+            </div>
+        </header>
+
+        <div style="margin-top:12px" class="panel">
+            <div style="margin-bottom:8px">
+                <label>State: <select id="stateFilter">
+                        <option value="">All</option>
+                        <option value="0">OK</option>
+                        <option value="1">WARNING</option>
+                        <option value="2">CRITICAL</option>
+                        <option value="3">UNKNOWN</option>
+                    </select></label>
+                <label style="margin-left:12px">Limit: <input id="limit" type="number" value="100"
+                        style="width:80px" /></label>
+            </div>
+            <table id="historyTable">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>Host</th>
+                        <th>Service</th>
+                        <th>State</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <footer class="small" style="margin-top:12px">Tip: Use filters to narrow results. Data is retained for
+            configured number of days.</footer>
+    </div>
+
+    <script>
+        (function () {
+            const apiPath = '/alerts/history';
+            const tableBody = document.querySelector('#historyTable tbody');
+            const btnRefresh = document.getElementById('btnRefresh');
+            const stateFilter = document.getElementById('stateFilter');
+            const limitEl = document.getElementById('limit');
+
+            async function load() {
+                const state = stateFilter.value;
+                const limit = limitEl.value || '100';
+                const url = apiPath + '?limit=' + encodeURIComponent(limit) + (state ? '&state=' + encodeURIComponent(state) : '');
+                try {
+                    const res = await fetch(url);
+                    const data = await res.json();
+                    tableBody.innerHTML = '';
+                    for (const r of data.rows) {
+                        const tr = document.createElement('tr');
+                        const when = new Date(r.createdAt).toLocaleString();
+                        tr.innerHTML = `<td>${when}</td><td>${r.host}</td><td>${r.service ?? ''}</td><td>${r.state}</td><td>${r.message ?? ''}</td>`;
+                        tableBody.appendChild(tr);
+                    }
+                } catch (e) {
+                    tableBody.innerHTML = '<tr><td colspan="5">Error loading data</td></tr>';
+                }
+            }
+
+            btnRefresh.addEventListener('click', load);
+            stateFilter.addEventListener('change', load);
+            limitEl.addEventListener('change', load);
+
+            load();
+        })();
+    </script>
+</body>
+
+</html>

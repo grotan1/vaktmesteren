@@ -51,6 +51,10 @@ sessionLogs:
   consoleEnabled: true
   consoleLogFormat: text # Defaults to "json", options are "text" or "json"
 
+# How long to retain alert history (in days). Rows older than this will be
+# deleted by the retention job. Default: 3
+retention_days: 3
+
 # futureCallExecutionEnabled: true # Defaults to true
 
 #futureCall:

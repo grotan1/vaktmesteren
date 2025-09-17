@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/io_client.dart';
 import 'package:serverpod/serverpod.dart';
+import 'package:yaml/yaml.dart';
 import 'icinga2_events.dart';
 import 'web/routes/log_viewer.dart';
 import 'package:vaktmesteren_server/src/generated/protocol.dart';
@@ -127,6 +128,8 @@ class Icinga2EventListener {
 
   // Polling has been removed - the event stream (and websocket) provide live updates.
   Timer? _reconnectTimer;
+  // Retention job timer
+  Timer? _retentionTimer;
   // Track last broadcast state per canonical key (host!service) to avoid duplicate alerts
   final Map<String, int> _lastBroadcastState = {};
   final Map<String, PersistedAlertState> _persistedStates = {};
@@ -146,6 +149,9 @@ class Icinga2EventListener {
     // Start event streaming in background (don't await) so polling can run as a fallback
     // ignore: unawaited_futures
     _connect();
+
+    // Start retention job (hourly) to delete old alert history
+    _startRetentionJob();
 
     // No polling started - we rely on the event stream and websocket for updates.
   }
@@ -620,6 +626,100 @@ class Icinga2EventListener {
     }
   }
 
+  /// Persist a historical alert entry (append-only)
+  Future<void> _persistHistory(String canonicalKey, String host,
+      String? service, int state, String? message,
+      {DateTime? at}) async {
+    try {
+      final entry = AlertHistory(
+        host: host,
+        service: service,
+        canonicalKey: canonicalKey,
+        state: state,
+        message: message,
+        createdAt: at ?? DateTime.now(),
+      );
+
+      // Use a background session so we don't depend on request/session lifetime
+      // Use the existing long-lived session provided to the listener.
+      await AlertHistory.db.insertRow(session, entry);
+    } catch (e) {
+      session.log('Failed to persist alert history for $canonicalKey: $e',
+          level: LogLevel.error);
+    }
+  }
+
+  /// Start retention job which deletes alert_history older than configured retention days
+  void _startRetentionJob() {
+    // Default retention: 3 days
+    final retentionDays = _readRetentionDaysFromConfig();
+    // Run immediately once, then hourly
+    _runRetentionJob(retentionDays);
+    _retentionTimer = Timer.periodic(Duration(hours: 1), (_) {
+      _runRetentionJob(retentionDays);
+    });
+  }
+
+  void _stopRetentionJob() {
+    // Intentionally left blank; retention timer canceled by cancelling the
+    // periodic Timer reference. Kept for future expansion.
+    try {
+      _retentionTimer?.cancel();
+    } catch (_) {}
+    _retentionTimer = null;
+  }
+
+  int _readRetentionDaysFromConfig() {
+    try {
+      // Look for common config files in repository order and read retention_days
+      final candidates = [
+        'config/production.yaml',
+        'config/staging.yaml',
+        'config/development.yaml',
+        'config/test.yaml',
+      ];
+      for (final path in candidates) {
+        final file = File(path);
+        if (!file.existsSync()) continue;
+        try {
+          final content = file.readAsStringSync();
+          final doc = loadYaml(content);
+          if (doc is YamlMap && doc.containsKey('retention_days')) {
+            final val = doc['retention_days'];
+            if (val is int && val > 0) return val;
+            if (val is String) {
+              final parsed = int.tryParse(val);
+              if (parsed != null && parsed > 0) return parsed;
+            }
+          }
+        } catch (e) {
+          // ignore parse errors and try next file
+        }
+      }
+      return 3;
+    } catch (_) {
+      return 3;
+    }
+  }
+
+  Future<void> _runRetentionJob(int retentionDays) async {
+    try {
+      final cutoff =
+          DateTime.now().toUtc().subtract(Duration(days: retentionDays));
+      // Delete rows older than cutoff using the generated ORM where-builder.
+      // The where-builder supports the '<' comparator for DateTime columns.
+      final deleted = await AlertHistory.db.deleteWhere(
+        session,
+        where: (t) => t.createdAt < cutoff,
+      );
+      session.log(
+          'Retention job: deleted ${deleted.length} alert_history rows older than $cutoff',
+          level: LogLevel.info);
+    } catch (e) {
+      session.log('Retention job failed: $e', level: LogLevel.error);
+    }
+  }
+
   /// Helper to produce a friendly host/service label without showing '/null'
   String _hostServiceLabel(String host, String? service) {
     final baseHost = host.split('.').first.toLowerCase().trim();
@@ -699,6 +799,9 @@ class Icinga2EventListener {
     // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
     final canonical = _canonicalKey(event.host, event.service);
     _persistState(canonical, event.host, event.service, stateCode);
+    // Persist history entry (non-blocking)
+    unawaited(_persistHistory(canonical, event.host, event.service, stateCode,
+        output == '' ? null : output));
     session.log(
         'CheckResult decision for $canonical: stateCode=$stateCode exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
         level: LogLevel.debug);
@@ -816,6 +919,9 @@ class Icinga2EventListener {
     // Log state changes with appropriate severity - but only alert on hard states
     final canonical = _canonicalKey(event.host, event.service);
     _persistState(canonical, event.host, event.service, event.state);
+    // Persist history entry (non-blocking)
+    unawaited(_persistHistory(
+        canonical, event.host, event.service, event.state, null));
     session.log(
         'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
         level: LogLevel.debug);
@@ -1090,6 +1196,9 @@ class Icinga2EventListener {
   /// Cancels any pending reconnect timer and closes the HTTP client.
   Future<void> stop() async {
     _isShuttingDown = true;
+
+    // Stop retention timer when shutting down so it doesn't fire after stop.
+    _stopRetentionJob();
 
     if (_reconnectTimer?.isActive ?? false) {
       _reconnectTimer?.cancel();

@@ -3,6 +3,7 @@ import 'package:serverpod/serverpod.dart';
 
 import 'package:vaktmesteren_server/src/web/routes/root.dart';
 import 'package:vaktmesteren_server/src/web/routes/log_viewer.dart';
+import 'package:vaktmesteren_server/src/web/routes/alert_history.dart';
 import 'package:vaktmesteren_server/src/web/routes/portainer_ops.dart';
 
 import 'src/generated/protocol.dart';
@@ -30,6 +31,10 @@ void run(List<String> args) async {
   pod.webServer.addRoute(RouteLogWebSocket(), '/logs/ws');
   pod.webServer.addRoute(RouteLogPoll(), '/logs/poll');
   pod.webServer.addRoute(RouteLogTest(), '/logs/test');
+
+  // Alert history viewer
+  pod.webServer.addRoute(RouteAlertHistoryPage(), '/alerts/history');
+  pod.webServer.addRoute(RouteAlertHistoryJson(), '/alerts/history');
 
   // Internal-only Portainer ops route. Registered under a path that avoids
   // Serverpod's automatic endpoint dispatch for top-level endpoint names.
