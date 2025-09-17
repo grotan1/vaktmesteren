@@ -558,8 +558,12 @@ class Icinga2EventListener {
         'Content-Type': 'application/json',
         'X-HTTP-Method-Override': 'GET',
       };
-      // Use 'name' for the service attribute as returned in attrs
-      final filter = 'host.name=="$host" && name=="$service"';
+      // Normalize host to base (strip domain) and match possible FQDN variants.
+      // Using match() avoids strict equality issues between short and FQDN host names.
+      final baseHost = host.split('.').first;
+      // In Icinga 2 filters, refer to 'service.name' for the service object name.
+      final filter =
+          'match("${baseHost}*", host.name) && service.name=="$service"';
       final body = jsonEncode({
         'filter': filter,
         'attrs': [
@@ -601,8 +605,10 @@ class Icinga2EventListener {
         'Content-Type': 'application/json',
         'X-HTTP-Method-Override': 'GET',
       };
+      // Normalize host and use match() to support FQDN/short name mismatches.
+      final baseHost = host.split('.').first;
       final body = jsonEncode({
-        'filter': 'host.name=="$host"',
+        'filter': 'match("${baseHost}*", host.name)',
         'attrs': [
           'name',
           'state',
@@ -645,8 +651,10 @@ class Icinga2EventListener {
         'X-HTTP-Method-Override': 'GET',
       };
       // Filter by host to keep payload small. Match possible FQDN variants using match().
+      // Normalize to short host name so it matches both short and FQDN entries.
       // Example: match("integrasjoner*", host_name)
-      final filter = 'match("$host*", host_name)';
+      final baseHost = host.split('.').first;
+      final filter = 'match("${baseHost}*", host_name)';
       final body = jsonEncode({
         'filter': filter,
         'attrs': [
@@ -726,10 +734,25 @@ class Icinga2EventListener {
       if (attrs != null) {
         state = (attrs['state'] as num?)?.toInt();
         stateType = (attrs['state_type'] as num?)?.toInt();
-        acknowledged = (attrs['acknowledgement'] as bool?) ?? false;
+        final ackRaw = attrs['acknowledgement'];
+        if (ackRaw is bool) {
+          acknowledged = ackRaw;
+        } else if (ackRaw is num) {
+          acknowledged = ackRaw.toDouble() != 0.0;
+        } else if (ackRaw is String) {
+          final n = num.tryParse(ackRaw);
+          acknowledged = n != null ? n != 0 : (ackRaw.toLowerCase() == 'true');
+        } else {
+          acknowledged = false;
+        }
         downtimeDepth = (attrs['downtime_depth'] as num?)?.toInt() ?? 0;
       } else {
-        state = _persistedStates[key]?.lastState;
+        // If we cannot fetch current attributes, do not attempt a post-downtime broadcast.
+        // This avoids false alerts while downtime may still be active or attributes lag.
+        session.log(
+            'Post-downtime check: attrs unavailable for ${_hostServiceLabel(host, service)} -> will retry later',
+            level: LogLevel.debug);
+        return;
       }
 
       if (state == null) return;
@@ -789,38 +812,34 @@ class Icinga2EventListener {
     if (hs == null) return;
     final host = hs.$1;
     final service = hs.$2;
+
+    // Schedule a series of checks to account for Icinga API delays.
+    // This is more robust than a single fixed delay.
+    final delays = [
+      const Duration(seconds: 1),
+      const Duration(seconds: 3),
+      const Duration(seconds: 7),
+      const Duration(seconds: 15),
+    ];
+
+    void scheduleChecks(String h, String s) {
+      for (final delay in delays) {
+        Timer(delay, () {
+          unawaited(_checkAndTriggerAfterDowntime(h, s));
+        });
+      }
+    }
+
     if (service != null && service.isNotEmpty) {
-      await _checkAndTriggerAfterDowntime(host, service);
-      // Retry shortly after to avoid race where downtime_depth is still > 0.
-      Timer(const Duration(seconds: 3), () {
-        unawaited(_checkAndTriggerAfterDowntime(host, service));
-      });
-      Timer(const Duration(seconds: 10), () {
-        unawaited(_checkAndTriggerAfterDowntime(host, service));
-      });
+      // For a specific service, schedule multiple checks.
+      scheduleChecks(host, service);
     } else {
-      // Host-level downtime ended; evaluate all services on host.
+      // For a host-level downtime, find all services and schedule checks for each.
       final services = await _fetchHostServicesAttrs(host);
       for (final attrs in services) {
         final svc = (attrs['name'] ?? '').toString();
-        if (svc.isEmpty) continue;
-        final dd = (attrs['downtime_depth'] as num?)?.toInt() ?? 0;
-        if (dd > 0) {
-          // Schedule retries per service to wait out Icinga lag in clearing downtime_depth
-          Timer(const Duration(seconds: 3), () {
-            unawaited(_checkAndTriggerAfterDowntime(host, svc));
-          });
-          Timer(const Duration(seconds: 10), () {
-            unawaited(_checkAndTriggerAfterDowntime(host, svc));
-          });
-        } else {
-          await _checkAndTriggerAfterDowntime(host, svc);
-          Timer(const Duration(seconds: 3), () {
-            unawaited(_checkAndTriggerAfterDowntime(host, svc));
-          });
-          Timer(const Duration(seconds: 10), () {
-            unawaited(_checkAndTriggerAfterDowntime(host, svc));
-          });
+        if (svc.isNotEmpty) {
+          scheduleChecks(host, svc);
         }
       }
     }

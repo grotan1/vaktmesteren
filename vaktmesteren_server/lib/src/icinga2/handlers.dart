@@ -180,7 +180,7 @@ Future<void> handleStateChange(
       LogBroadcaster.broadcastLog(logMessage);
       didBroadcast = true;
     }
-  } else if (isInDowntime || isAcknowledged) {
+  } else if ((isInDowntime || isAcknowledged) && isHardState) {
     final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
     final logMessage =
         '🔕 ALERT SUPPRESSED ($reason): ${s._hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
@@ -207,6 +207,13 @@ Future<void> handleStateChange(
         unawaited(s._checkAndTriggerAfterDowntime(h, svc));
       });
     }
+  } else if (isInDowntime || isAcknowledged) {
+    // This case now primarily handles SOFT states during downtime/acknowledgement.
+    // We will log it quietly without broadcasting to avoid noise.
+    final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
+    s.session.log(
+        'State change suppressed ($reason, ${stateTypeName.toLowerCase()}): ${s._hostServiceLabel(event.host, event.service)} to $stateName',
+        level: LogLevel.debug);
   } else {
     s.session.log(
         'STATE CHANGE (Soft): ${s._hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
@@ -304,24 +311,32 @@ void handleDowntimeAdded(Icinga2EventListener s, DowntimeAddedEvent event) {
 }
 
 void handleDowntimeRemoved(Icinga2EventListener s, DowntimeRemovedEvent event) {
-  s.session.log('Processing downtime removed: ${event.downtime}',
-      level: LogLevel.debug);
+  final host = event.downtime['host_name'] as String? ?? '';
+  final service = event.downtime['service_name'] as String?;
+  s.session.log(
+      'DOWNTIME REMOVED: ${s._hostServiceLabel(host, service)}. Monitoring is now active.',
+      level: LogLevel.info);
   // When downtime ends, if the service/host is still non-OK, we should trigger an alert now.
   unawaited(s._handleDowntimeEnded(event.downtime));
 }
 
 void handleDowntimeStarted(Icinga2EventListener s, DowntimeStartedEvent event) {
-  s.session.log('Processing downtime started: ${event.downtime}',
-      level: LogLevel.debug);
+  final host = event.downtime['host_name'] as String? ?? '';
+  final service = event.downtime['service_name'] as String?;
+  s.session.log(
+      'DOWNTIME STARTED: ${s._hostServiceLabel(host, service)}. Alerts are now suppressed.',
+      level: LogLevel.info);
 }
 
 void handleDowntimeTriggered(
     Icinga2EventListener s, DowntimeTriggeredEvent event) {
-  s.session.log('Processing downtime triggered: ${event.downtime}',
-      level: LogLevel.debug);
-  // Some environments emit DowntimeTriggered when an active downtime entry is removed/expired.
-  // Run the same post-downtime check to be safe.
-  unawaited(s._handleDowntimeEnded(event.downtime));
+  final host = event.downtime['host_name'] as String? ?? '';
+  final service = event.downtime['service_name'] as String?;
+  s.session.log(
+      'DOWNTIME TRIGGERED: ${s._hostServiceLabel(host, service)}. Alerts will be suppressed.',
+      level: LogLevel.info);
+  // DowntimeTriggered indicates the downtime has started/activated.
+  // Do NOT run post-downtime checks here; that should only occur when downtime ends.
 }
 
 void handleObjectCreated(Icinga2EventListener s, ObjectCreatedEvent event) {
