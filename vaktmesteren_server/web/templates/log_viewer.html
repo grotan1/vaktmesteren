@@ -8,12 +8,16 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0f1724;
-            --panel: #0b1220;
-            --muted: #94a3b8;
-            --accent: #7c5cff;
-            --danger: #ff6b6b;
-            --ok: #38bdf8;
+            /* Light theme palette */
+            --bg: #f8fafc;
+            --panel: #ffffff;
+            --muted: #475569;
+            --accent: #4f46e5;
+            --danger: #ef4444;
+            --ok: #047857;
+            /* darker green for better contrast */
+            --border: #e2e8f0;
+            --warning: #d97706;
         }
 
         * {
@@ -23,8 +27,8 @@
         body {
             font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
             margin: 0;
-            background: linear-gradient(180deg, var(--bg), #071022);
-            color: #e6eef8;
+            background: var(--bg);
+            color: #0f172a;
         }
 
         .container {
@@ -45,6 +49,19 @@
             font-weight: 600;
         }
 
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand img {
+            height: 120px;
+            width: auto;
+            display: block;
+            border-radius: 6px;
+        }
+
         .controls {
             display: flex;
             gap: 10px;
@@ -53,7 +70,7 @@
 
         .btn {
             background: var(--accent);
-            color: white;
+            color: #ffffff;
             padding: 8px 12px;
             border-radius: 8px;
             border: none;
@@ -62,7 +79,18 @@
 
         .btn.ghost {
             background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border);
+            color: var(--accent);
+            /* make text readable on white background */
+        }
+
+        .btn.ghost:hover,
+        .btn.ghost:focus {
+            background: rgba(79, 70, 229, 0.06);
+            /* subtle accent tint */
+            border-color: rgba(79, 70, 229, 0.28);
+            color: var(--accent);
+            outline: none;
         }
 
         .layout {
@@ -73,8 +101,8 @@
         }
 
         .panel {
-            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
-            border: 1px solid rgba(255, 255, 255, 0.03);
+            background: var(--panel);
+            border: 1px solid var(--border);
             padding: 12px;
             border-radius: 12px;
         }
@@ -91,7 +119,8 @@
             padding: 8px;
             border-radius: 6px;
             margin-bottom: 8px;
-            background: rgba(255, 255, 255, 0.02);
+            background: #f8fafc;
+            border: 1px solid var(--border);
         }
 
         .log-entry.critical {
@@ -99,11 +128,11 @@
         }
 
         .log-entry.warning {
-            border-left: 4px solid #f6c85f;
+            border-left: 4px solid var(--warning);
         }
 
         .log-entry.recovery {
-            border-left: 4px solid #2ecc71;
+            border-left: 4px solid var(--ok);
         }
 
         .small {
@@ -115,8 +144,8 @@
             width: 100%;
             padding: 8px;
             border-radius: 8px;
-            border: none;
-            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            background: #ffffff;
         }
 
         footer {
@@ -136,42 +165,42 @@
 <body>
     <div class="container">
         <header>
-            <div>
-                <h1>{{title}}</h1>
-                <div class="small">Realtime Icinga2 event stream</div>
+            <div class="brand">
+                <img src="{{logoDataUrl}}" alt="Logo" onerror="this.style.display='none'" />
+                <div class="small">Sanntids Icinga2 hendelsesstrøm</div>
             </div>
             <div class="controls">
-                <div id="connectionStatus" class="small">Connecting...</div>
+                <div id="connectionStatus" class="small">Kobler til...</div>
                 <button class="btn" id="btnTest">Send test</button>
-                <button class="btn ghost" id="btnClear">Clear</button>
+                <button class="btn ghost" id="btnClear">Tøm</button>
             </div>
         </header>
 
         <div class="layout">
             <div class="panel">
-                <div class="small">Last: <span id="lastUpdate">--</span></div>
-                <div class="small">Total logs: <strong id="totalLogs">0</strong></div>
+                <div class="small">Sist: <span id="lastUpdate">--</span></div>
+                <div class="small">Totalt logger: <strong id="totalLogs">0</strong></div>
                 <div id="logContainer" style="margin-top:12px"></div>
             </div>
 
             <aside class="panel">
                 <div class="small">Filter</div>
-                <input id="search" class="search" placeholder="Search text" />
+                <input id="search" class="search" placeholder="Søk i tekst" />
                 <div style="margin-top:12px">
-                    <label><input type="checkbox" id="autoScroll" checked /> Keep at bottom</label>
+                    <label><input type="checkbox" id="autoScroll" checked /> Vis nyeste nederst</label>
                 </div>
                 <div style="margin-top:12px">
-                    <div class="small">Connection mode</div>
+                    <div class="small">Tilkoblingsmodus</div>
                     <div id="mode" class="small">WebSocket</div>
                 </div>
                 <div style="margin-top:12px;display:flex;gap:8px">
-                    <button class="btn ghost" id="btnPause">Pause</button>
-                    <button class="btn" id="btnDownload">Download</button>
+                    <button class="btn" id="btnPause">Pause</button>
+                    <button class="btn" id="btnDownload">Last ned</button>
                 </div>
             </aside>
         </div>
 
-        <footer>Tip: use the "Send test" button to trigger a manual message (calls /logs/test).</footer>
+        <footer>Tips: bruk knappen "Send test" for å utløse en manuell melding (kaller /logs/test).</footer>
     </div>
 
     <script>
@@ -190,17 +219,24 @@
             let ws = null;
             let paused = false;
 
+            // Locale and formatting options: force Norwegian (nb-NO) and 24-hour time
+            const __locale = 'nb-NO';
+            const __timeOpts = { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' };
+            const __dateTimeOpts = { year: 'numeric', month: '2-digit', day: '2-digit', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' };
+
             function setConnection(connected, text) {
                 connectionStatus.textContent = text;
                 document.getElementById('mode').textContent = text;
-                connectionStatus.style.color = connected ? '#8ee5ff' : '#fca5a5';
+                // Use CSS variables for success / failure to ensure good contrast
+                connectionStatus.style.color = connected ? getComputedStyle(document.documentElement).getPropertyValue('--ok') || '#047857' : getComputedStyle(document.documentElement).getPropertyValue('--danger') || '#ef4444';
             }
 
-            function updateTimestamp() { lastUpdate.textContent = new Date().toLocaleTimeString(); }
+            function updateTimestamp() { lastUpdate.textContent = new Date().toLocaleTimeString(__locale, __timeOpts); }
 
             function matchesFilter(text) { const q = (searchEl.value || '').trim().toLowerCase(); if (!q) return true; return (text || '').toLowerCase().includes(q); }
 
-            function addLogEntry(message) {
+            function addLogEntry(message, skipTimestamp) {
+                if (skipTimestamp === undefined) skipTimestamp = false;
                 if (!matchesFilter(message)) return;
 
                 // Prevent immediate duplicate entries in the UI. If the last
@@ -209,7 +245,10 @@
                 // accidentally emits the same message multiple times quickly.
                 const lastChild = logContainer.lastElementChild;
                 if (lastChild && typeof lastChild.textContent === 'string') {
-                    if (lastChild.textContent.endsWith(message)) {
+                    // Strip a leading timestamp like "[HH:MM:SS] " from the
+                    // last child's text so we compare the message body only.
+                    const stripLeadingTimestamp = (t) => (t || '').replace(/^\[[^\]]*\]\s*/, '');
+                    if (stripLeadingTimestamp(lastChild.textContent).endsWith(message)) {
                         // Skip duplicate
                         return;
                     }
@@ -221,7 +260,11 @@
                 if (mu.indexOf('CRITICAL') !== -1) div.classList.add('critical');
                 else if (mu.indexOf('WARNING') !== -1) div.classList.add('warning');
                 else if (mu.indexOf('RECOVERY') !== -1) div.classList.add('recovery');
-                div.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+                if (skipTimestamp) {
+                    div.textContent = message;
+                } else {
+                    div.textContent = '[' + new Date().toLocaleTimeString(__locale, __timeOpts) + '] ' + message;
+                }
                 logContainer.appendChild(div);
                 totalLogs++;
                 totalLogsEl.textContent = totalLogs;
@@ -245,22 +288,61 @@
                         ws = null;
                     }
 
+                    const t0 = performance.now();
                     ws = new WebSocket(wsUrl);
-                    ws.onopen = function () { setConnection(true, 'Connected (WebSocket)'); };
+                    ws.onopen = function () {
+                        const dt = Math.round(performance.now() - t0);
+                        console.debug('WebSocket connected in', dt, 'ms');
+                        setConnection(true, 'Tilkoblet (WebSocket)');
+                    };
                     ws.onmessage = function (e) { try { const d = JSON.parse(e.data); if (d && d.type === 'log' && d.message) addLogEntry(d.message); else if (d && d.type === 'ping') updateTimestamp(); } catch (err) { addLogEntry(e.data); } };
-                    ws.onerror = function () { try { if (ws) ws.close(); } catch (_) { } setConnection(false, 'WS Error'); ws = null; setTimeout(startWS, 2000); };
-                    ws.onclose = function () { setConnection(false, 'WebSocket closed'); ws = null; setTimeout(startWS, 2000); };
-                } catch (e) { setConnection(false, 'WS Failed'); ws = null; setTimeout(startWS, 2000); }
+                    ws.onerror = function () { try { if (ws) ws.close(); } catch (_) { } setConnection(false, 'WS-feil'); ws = null; setTimeout(startWS, 2000); };
+                    ws.onclose = function () { setConnection(false, 'WebSocket lukket'); ws = null; setTimeout(startWS, 2000); };
+                } catch (e) { setConnection(false, 'WS mislyktes'); ws = null; setTimeout(startWS, 2000); }
             }
 
-            // Start WebSocket-only connection with auto-reconnect
-            startWS();
+            // If the server embedded initial alert history, decode and render it
+            // immediately so clients don't need a separate fetch. The server
+            // provides `initialAlertHistory` as a URI-encoded JSON string.
+            (function connectEarlyThenRenderHistory() {
+                try {
+                    // Start WebSocket ASAP to begin handshake while we render initial history
+                    startWS();
+                    const encoded = '{{initialAlertHistory}}';
+                    if (encoded && encoded.length > 0) {
+                        try {
+                            const decoded = decodeURIComponent(encoded);
+                            const rows = JSON.parse(decoded);
+                            if (Array.isArray(rows)) {
+                                // Ensure we render oldest -> newest so that the
+                                // latest entries end up at the bottom and live
+                                // messages continue naturally.
+                                const inChronoOrder = rows.slice().reverse();
+                                for (const row of inChronoOrder) {
+                                    try {
+                                        const ts = row.createdAt ? new Date(row.createdAt) : new Date();
+                                        // Use the stored message directly. It already contains the formatted
+                                        // emoji + label + host/service text without secrets.
+                                        const body = row.message || '';
+                                        const formatted = `[${ts.toLocaleString(__locale, __dateTimeOpts)}] ${body}`;
+                                        addLogEntry(formatted, true);
+                                    } catch (_) { }
+                                }
+                            }
+                        } catch (e) {
+                            console.debug('Failed to parse server-embedded alert history:', e);
+                        }
+                    }
+                } catch (_) { }
+                // If WS failed to start earlier, try again after rendering
+                if (!ws) startWS();
+            })();
 
             document.getElementById('btnTest').addEventListener('click', function () { fetch(origin + '/logs/test').catch(console.error); });
             document.getElementById('btnClear').addEventListener('click', clearLogs);
             document.getElementById('btnPause').addEventListener('click', function () {
                 paused = !paused;
-                this.textContent = paused ? 'Resume' : 'Pause';
+                this.textContent = paused ? 'Fortsett' : 'Pause';
                 if (paused) {
                     try {
                         if (ws) ws.close();
@@ -273,8 +355,8 @@
             document.getElementById('btnDownload').addEventListener('click', function () { const txt = Array.from(logContainer.querySelectorAll('.log-entry')).map(n => n.textContent).join('\n'); const blob = new Blob([txt], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'logs.txt'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); });
             searchEl.addEventListener('input', function () { Array.from(logContainer.children).forEach(ch => { ch.style.display = matchesFilter(ch.textContent) ? 'block' : 'none'; }); });
 
-            window.addEventListener('error', function (ev) { console.error(ev); setConnection(false, 'JS Error'); });
-            window.addEventListener('unhandledrejection', function (ev) { console.error(ev); setConnection(false, 'Promise Error'); });
+            window.addEventListener('error', function (ev) { console.error(ev); setConnection(false, 'JS-feil'); });
+            window.addEventListener('unhandledrejection', function (ev) { console.error(ev); setConnection(false, 'Ulovet promise-feil'); });
         })();
     </script>
 
