@@ -1,117 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:http/io_client.dart';
+// Removed http IOClient; using Dio for all HTTP interactions
+import 'package:dio/dio.dart' as dio;
+import 'package:dio/io.dart' as dio_io;
 import 'package:serverpod/serverpod.dart';
 import 'package:yaml/yaml.dart';
 import 'icinga2_events.dart';
 import 'web/routes/log_viewer.dart';
 import 'package:vaktmesteren_server/src/generated/protocol.dart';
 
-/// Configuration class for Icinga2 connection
-class Icinga2Config {
-  final String host;
-  final int port;
-  final String scheme;
-  final String username;
-  final String password;
-  final bool skipCertificateVerification;
-  final String queue;
-  final List<String> types;
-  final String filter;
-  final int timeout;
-  final bool reconnectEnabled;
-  final int reconnectDelay;
-  final int maxRetries;
+part 'icinga2/config.dart';
+part 'icinga2/handlers.dart';
 
-  Icinga2Config({
-    required this.host,
-    required this.port,
-    required this.scheme,
-    required this.username,
-    required this.password,
-    required this.skipCertificateVerification,
-    required this.queue,
-    required this.types,
-    required this.filter,
-    required this.timeout,
-    required this.reconnectEnabled,
-    required this.reconnectDelay,
-    required this.maxRetries,
-  });
-
-  /// Load configuration from YAML file
-  static Future<Icinga2Config> loadFromConfig(Session session) async {
-    try {
-      // For now, return hardcoded config based on the provided credentials
-      // TODO: Implement proper configuration loading from icinga2.yaml
-      return Icinga2Config(
-        host: '10.0.0.11',
-        port: 5665,
-        scheme: 'https',
-        username: 'eventstream-user',
-        password: 'supersecretpassword',
-        skipCertificateVerification: true,
-        queue: 'vaktmesteren-server-queue',
-        types: [
-          'CheckResult',
-          'StateChange',
-          'Notification',
-          'AcknowledgementSet',
-          'AcknowledgementCleared',
-          'CommentAdded',
-          'CommentRemoved',
-          'DowntimeAdded',
-          'DowntimeRemoved',
-          'DowntimeStarted',
-          'DowntimeTriggered',
-          'ObjectCreated',
-          'ObjectModified',
-          'ObjectDeleted'
-        ],
-        filter: '', // Empty filter to include all events
-        timeout: 30,
-        reconnectEnabled: true,
-        reconnectDelay: 5,
-        maxRetries: 10,
-      );
-    } catch (e) {
-      session.log('Failed to load Icinga2 configuration: $e',
-          level: LogLevel.error);
-      // Return default configuration
-      return Icinga2Config(
-        host: '10.0.0.11',
-        port: 5665,
-        scheme: 'https',
-        username: 'eventstream-user',
-        password: 'supersecretpassword',
-        skipCertificateVerification: true,
-        queue: 'vaktmesteren-server-queue',
-        types: [
-          'CheckResult',
-          'StateChange',
-          'Notification',
-          'AcknowledgementSet',
-          'AcknowledgementCleared',
-          'CommentAdded',
-          'CommentRemoved',
-          'DowntimeAdded',
-          'DowntimeRemoved',
-          'DowntimeStarted',
-          'DowntimeTriggered',
-          'ObjectCreated',
-          'ObjectModified',
-          'ObjectDeleted'
-        ],
-        filter: '', // Empty filter to include all events
-        timeout: 30,
-        reconnectEnabled: true,
-        reconnectDelay: 5,
-        maxRetries: 10,
-      );
-    }
-  }
-}
+// Icinga2Config is now defined in part 'icinga2/config.dart'
 
 /// Service class for listening to Icinga2 event streams
 class Icinga2EventListener {
@@ -122,14 +24,23 @@ class Icinga2EventListener {
   // removed to satisfy analyzer warnings.
   int _retryCount = 0;
   bool _isShuttingDown = false;
-  IOClient? _ioClient;
-  int _debugEventCount = 0;
+  // Using Dio exclusively for HTTP and streaming
+  dio.Dio? _dio;
+  // Debug event counter removed (no longer used)
   DateTime? _lastEventAt;
+  // Track when we last broadcast a state for a canonical key to suppress
+  // rapid duplicate broadcasts that can occur when both CheckResult and
+  // StateChange events are emitted for the same change or when reconnects
+  // cause the same event(s) to be re-delivered.
+  final Map<String, DateTime> _lastBroadcastAt = {};
 
   // Polling has been removed - the event stream (and websocket) provide live updates.
   Timer? _reconnectTimer;
   // Retention job timer
   Timer? _retentionTimer;
+  // Recovery backfill timer: polls occasionally to synthesize a missing OK
+  // recovery if the event stream was disconnected when the recovery occurred.
+  Timer? _recoveryBackfillTimer;
   // Track last broadcast state per canonical key (host!service) to avoid duplicate alerts
   final Map<String, int> _lastBroadcastState = {};
   final Map<String, PersistedAlertState> _persistedStates = {};
@@ -141,17 +52,21 @@ class Icinga2EventListener {
     session.log('Icinga2EventListener: Starting event listener...',
         level: LogLevel.info);
     await _loadPersistedStates();
+    // Ensure Dio client is ready before any API calls
+    _initDio();
     await _reconcileStatesOnStartup();
-    final startMessage = '🟢 Iicinga2EventListener: Starting event listener...';
-    LogBroadcaster.broadcastLog(startMessage);
     session.log('Starting Iicinga2 event listener...', level: LogLevel.info);
 
-    // Start event streaming in background (don't await) so polling can run as a fallback
+    // Start event streaming in background (don't await)
     // ignore: unawaited_futures
-    _connect();
+    _connectWithDio();
 
     // Start retention job (hourly) to delete old alert history
     _startRetentionJob();
+
+    // Start a light-weight recovery backfill job that runs periodically and
+    // ensures we don't miss a recovery if the event stream briefly disconnects.
+    _startRecoveryBackfillJob();
 
     // No polling started - we rely on the event stream and websocket for updates.
   }
@@ -160,21 +75,14 @@ class Icinga2EventListener {
     session.log('Reconciling Icinga states on startup...',
         level: LogLevel.info);
     try {
-      final headers = {
-        'Authorization':
-            'Basic ${base64Encode(utf8.encode('${config.username}:${config.password}'))}',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      };
-
-      final servicesUrl =
-          '${config.scheme}://${config.host}:${config.port}/v1/objects/services';
-
-      final response =
-          await _ioClient!.get(Uri.parse(servicesUrl), headers: headers);
+      // Use Dio to fetch current services for reconciliation
+      final response = await _dio!
+          .get('/v1/objects/services')
+          .timeout(Duration(seconds: config.timeout));
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+        final data =
+            response.data is String ? jsonDecode(response.data) : response.data;
         final results = data['results'] as List;
 
         for (final serviceData in results) {
@@ -196,7 +104,7 @@ class Icinga2EventListener {
             level: LogLevel.info);
       } else {
         session.log(
-            'Failed to fetch services from Icinga for reconciliation. Status: ${response.statusCode}, Body: ${response.body}',
+            'Failed to fetch services from Icinga for reconciliation. Status: ${response.statusCode}, Body: ${response.data}',
             level: LogLevel.error);
       }
     } catch (e) {
@@ -228,296 +136,41 @@ class Icinga2EventListener {
   // Polling code removed.
 
   /// Connect to Iicinga2 event stream
-  Future<void> _connect() async {
-    if (_isShuttingDown) return;
+  // Removed legacy _connect() that used HttpClient; using Dio exclusively
 
-    try {
-      session.log(
-          'Iicinga2EventListener: Connecting to Iicinga2 at ${config.scheme}://${config.host}:${config.port}',
-          level: LogLevel.info);
-
-      // Create HTTP client with SSL settings
-      final httpClient = HttpClient();
-      if (config.skipCertificateVerification) {
-        httpClient.badCertificateCallback = (cert, host, port) => true;
-      }
-
-      // Use IOClient to wrap the HttpClient for the http package
-      _ioClient = IOClient(httpClient);
-      session.log('Iicinga2EventListener: HTTP client created',
-          level: LogLevel.debug);
-
-      // Prepare authentication headers
-      final credentials =
-          base64Encode(utf8.encode('${config.username}:${config.password}'));
-      final headers = {
-        'Authorization': 'Basic $credentials',
-        'Content-Type': 'application/json',
+  /// Ensure the Dio client is initialized with proper base URL, headers,
+  /// and TLS behavior.
+  void _initDio() {
+    if (_dio != null) return;
+    final options = dio.BaseOptions(
+      baseUrl: '${config.scheme}://${config.host}:${config.port}',
+      connectTimeout: Duration(seconds: config.timeout),
+      receiveTimeout:
+          Duration(seconds: config.streamInactivitySeconds + config.timeout),
+      sendTimeout: Duration(seconds: config.timeout),
+      headers: {
+        'Authorization':
+            'Basic ${base64Encode(utf8.encode('${config.username}:${config.password}'))}',
         'Accept': 'application/json',
-      };
-
-      // First, test basic connectivity and discover available endpoints
-      final testUrl = '${config.scheme}://${config.host}:${config.port}/v1';
-      session.log(
-          'Iicinga2EventListener: Testing basic connectivity to $testUrl',
-          level: LogLevel.debug);
-
-      final testResponse = await _ioClient!
-          .get(Uri.parse(testUrl), headers: headers)
-          .timeout(Duration(seconds: 30));
-
-      session.log(
-          'Iicinga2EventListener: Test response status: ${testResponse.statusCode}',
-          level: LogLevel.debug);
-      session.log('Iicinga2EventListener: API response: ${testResponse.body}',
-          level: LogLevel.debug);
-
-      if (testResponse.statusCode != 200) {
-        session.log(
-            'Iicinga2EventListener: Basic API test failed: ${testResponse.body}',
-            level: LogLevel.error);
-        throw Exception(
-            'Iicinga2 API not accessible: ${testResponse.statusCode}');
-      }
-
-      // Check what endpoints are available
-      session.log('Iicinga2EventListener: Checking available endpoints...',
-          level: LogLevel.debug);
-      final endpointsUrl =
-          '${config.scheme}://${config.host}:${config.port}/v1';
-      final endpointsResponse = await _ioClient!
-          .get(Uri.parse(endpointsUrl), headers: headers)
-          .timeout(Duration(seconds: 30));
-
-      session.log(
-          'Iicinga2EventListener: Available endpoints response: ${endpointsResponse.body}',
-          level: LogLevel.debug);
-
-      // Test other API endpoints to verify functionality
-      session.log('Iicinga2EventListener: Testing other API endpoints...',
-          level: LogLevel.debug);
-
-      // Test /v1/status endpoint
-      final statusUrl =
-          '${config.scheme}://${config.host}:${config.port}/v1/status';
-      session.log('Iicinga2EventListener: Testing $statusUrl',
-          level: LogLevel.debug);
-      try {
-        final statusResponse = await _ioClient!
-            .get(Uri.parse(statusUrl), headers: headers)
-            .timeout(Duration(seconds: 10));
-        session.log(
-            'Iicinga2EventListener: Status endpoint response: ${statusResponse.statusCode}',
-            level: LogLevel.debug);
-        if (statusResponse.statusCode == 200) {
-          session.log(
-              'Iicinga2EventListener: Status endpoint works - API is functional',
-              level: LogLevel.debug);
-        }
-      } catch (e) {
-        session.log('Iicinga2EventListener: Status endpoint failed: $e',
-            level: LogLevel.debug);
-      }
-
-      // Test /v1/objects/hosts endpoint
-      final objectsUrl =
-          '${config.scheme}://${config.host}:${config.port}/v1/objects/hosts';
-      session.log('Iicinga2EventListener: Testing $objectsUrl',
-          level: LogLevel.debug);
-      try {
-        final objectsResponse = await _ioClient!
-            .get(Uri.parse(objectsUrl), headers: headers)
-            .timeout(Duration(seconds: 10));
-        session.log(
-            'Iicinga2EventListener: Objects endpoint response: ${objectsResponse.statusCode}',
-            level: LogLevel.debug);
-        if (objectsResponse.statusCode == 200) {
-          session.log(
-              'Iicinga2EventListener: Objects endpoint works - API permissions are correct',
-              level: LogLevel.debug);
-        }
-      } catch (e) {
-        session.log('Iicinga2EventListener: Objects endpoint failed: $e',
-            level: LogLevel.debug);
-      }
-
-      // Try POST request to /v1/events for event streaming
-      session.log(
-          'Iicinga2EventListener: Attempting event stream subscription to /v1/events',
-          level: LogLevel.debug);
-
-      // For event streaming, we need to use HttpClient directly to access the response stream
-      final eventsUrl = Uri.parse(
-          '${config.scheme}://${config.host}:${config.port}/v1/events');
-      final requestBody = {
-        'queue': config.queue,
-        'types': config.types,
-        if (config.filter.isNotEmpty) 'filter': config.filter,
-      };
-
-      session.log(
-          'Iicinga2EventListener: Event stream request body: $requestBody',
-          level: LogLevel.debug);
-
-      // Use HttpClient directly for streaming response
-      final streamHttpClient = HttpClient();
+        'Content-Type': 'application/json',
+        'Connection': 'keep-alive',
+      },
+    );
+    final d = dio.Dio(options);
+    final adapter = dio_io.IOHttpClientAdapter();
+    adapter.createHttpClient = () {
+      final client = HttpClient();
       if (config.skipCertificateVerification) {
-        streamHttpClient.badCertificateCallback = (cert, host, port) => true;
+        client.badCertificateCallback = (cert, host, port) => true;
       }
-
-      try {
-        final request = await streamHttpClient.postUrl(eventsUrl);
-        request.headers.set('Authorization', headers['Authorization']!);
-        request.headers.set('Content-Type', 'application/json');
-        request.headers.set('Accept', 'application/json');
-
-        // Write the request body
-        request.write(jsonEncode(requestBody));
-
-        session.log('Iicinga2EventListener: Sending POST request to $eventsUrl',
-            level: LogLevel.debug);
-        // Streaming endpoint can be slow to return and may be long-lived.
-        // Allow a generous timeout for the initial response so transient
-        // network latency doesn't cause frequent reconnects.
-        final response = await request.close().timeout(Duration(seconds: 60));
-
-        session.log(
-            'Iicinga2EventListener: Event stream response status: ${response.statusCode}',
-            level: LogLevel.debug);
-        session.log(
-            'Iicinga2EventListener: Event stream response headers: ${response.headers}',
-            level: LogLevel.debug);
-
-        if (response.statusCode == 200) {
-          session.log(
-              'Iicinga2EventListener: Successfully connected to Iicinga2 event stream',
-              level: LogLevel.info);
-          final connectMessage =
-              '🔗 Iicinga2EventListener: Successfully connected to Iicinga2 event stream';
-          LogBroadcaster.broadcastLog(connectMessage);
-          session.log('Successfully connected to Iicinga2 event stream',
-              level: LogLevel.info);
-          _retryCount = 0;
-
-          // Process the event stream
-          await _processEventStream(response);
-        } else {
-          session.log(
-              'Iicinga2EventListener: Event stream connection failed: ${response.statusCode}',
-              level: LogLevel.error);
-          final responseBody = await response.transform(utf8.decoder).join();
-          session.log('Iicinga2EventListener: Response body: $responseBody',
-              level: LogLevel.error);
-          throw Exception(
-              'Event stream connection failed: HTTP ${response.statusCode}');
-        }
-      } finally {
-        streamHttpClient.close();
-      }
-    } catch (e) {
-      session.log('Iicinga2EventListener: Failed to connect to Iicinga2: $e',
-          level: LogLevel.error);
-
-      if (config.reconnectEnabled && !_isShuttingDown) {
-        _scheduleReconnect();
-      }
-    }
+      return client;
+    };
+    d.httpClientAdapter = adapter;
+    _dio = d;
   }
 
   /// Process the event stream response
-  Future<void> _processEventStream(HttpClientResponse response) async {
-    if (_isShuttingDown) return;
-
-    try {
-      session.log('Iicinga2EventListener: Starting to process event stream...',
-          level: LogLevel.debug);
-
-      // Convert the response to a stream of lines
-      final rawStream =
-          response.transform(utf8.decoder).transform(LineSplitter());
-
-      // Wrap the stream with an inactivity timeout so we detect stalled
-      // connections. If no data arrives for [inactivityTimeout], the
-      // subscription will be cancelled and we schedule a reconnect.
-      final inactivityTimeout = Duration(minutes: 2);
-      final stream = rawStream.timeout(inactivityTimeout, onTimeout: (sink) {
-        session.log(
-            'Iicinga2EventListener: Event stream inactive for ${inactivityTimeout.inMinutes} minutes, timing out',
-            level: LogLevel.warning);
-        try {
-          // Record inactivity timestamp
-          _lastEventAt = DateTime.now();
-          // Close the sink to break the await-for loop
-          sink.close();
-        } catch (_) {}
-      });
-
-      await for (final line in stream) {
-        if (_isShuttingDown) break;
-
-        if (line.trim().isNotEmpty) {
-          // Uncomment for debugging: session.log('Iicinga2EventListener: Received event line: $line', level: LogLevel.debug);
-          try {
-            final event = jsonDecode(line);
-
-            // Special debugging for integrasjoner events
-            if (event['host'] == 'integrasjoner') {
-              session.log(
-                  '🎯 INTEGRASJONER EVENT RECEIVED: ${event['type']} for ${event['host']}/${event['service']}',
-                  level: LogLevel.debug);
-            }
-
-            // Log all events for debugging (increased from 5 to 20)
-            if (_debugEventCount < 20) {
-              session.log(
-                  'Iicinga2EventListener: Processing event type: ${event['type']}, host: ${event['host']}, service: ${event['service']}',
-                  level: LogLevel.debug);
-              _debugEventCount++;
-            }
-
-            // Also log every 100th event to see ongoing activity
-            if (_debugEventCount % 100 == 0) {
-              session.log(
-                  'Iicinga2EventListener: Still processing events... count: $_debugEventCount, last: ${event['type']} for ${event['host']}/${event['service']}',
-                  level: LogLevel.debug);
-            }
-
-            _lastEventAt = DateTime.now();
-            _handleEvent(event);
-          } catch (e) {
-            session.log('Failed to parse event: $e', level: LogLevel.warning);
-            session.log('Raw event data: $line', level: LogLevel.debug);
-          }
-        } else {
-          session.log(
-              'Iicinga2EventListener: Received empty line from event stream',
-              level: LogLevel.debug);
-        }
-      }
-
-      session.log('Iicinga2EventListener: Event stream ended',
-          level: LogLevel.info);
-
-      // If the stream ended unexpectedly (not during shutdown), schedule a
-      // reconnect so we resume listening automatically. This prevents the
-      // listener from stopping permanently when the connection drops.
-      if (config.reconnectEnabled && !_isShuttingDown) {
-        session.log('Event stream ended unexpectedly, scheduling reconnect',
-            level: LogLevel.warning);
-        _scheduleReconnect();
-      }
-    } catch (e) {
-      session.log('Iicinga2EventListener: Error processing event stream: $e',
-          level: LogLevel.error);
-      session.log('Error processing event stream: $e', level: LogLevel.error);
-
-      // Reconnection will be scheduled below if configured.
-
-      if (config.reconnectEnabled && !_isShuttingDown) {
-        _scheduleReconnect();
-      }
-    }
-  }
+  // Removed legacy _processEventStream; streaming handled in _connectWithDio
 
   /// Handle incoming events
   void _handleEvent(Map<String, dynamic> event) {
@@ -530,50 +183,53 @@ class Icinga2EventListener {
       // Route to specific event handler based on type
       switch (icingaEvent.type) {
         case 'CheckResult':
-          _handleCheckResult(icingaEvent as CheckResultEvent);
+          // ignore: unawaited_futures
+          handleCheckResult(this, icingaEvent as CheckResultEvent);
           break;
         case 'StateChange':
-          _handleStateChange(icingaEvent as StateChangeEvent);
+          // ignore: unawaited_futures
+          handleStateChange(this, icingaEvent as StateChangeEvent);
           break;
         case 'Notification':
-          _handleNotification(icingaEvent as NotificationEvent);
+          handleNotification(this, icingaEvent as NotificationEvent);
           break;
         case 'AcknowledgementSet':
-          _handleAcknowledgementSet(icingaEvent as AcknowledgementSetEvent);
+          handleAcknowledgementSet(
+              this, icingaEvent as AcknowledgementSetEvent);
           break;
         case 'AcknowledgementCleared':
-          _handleAcknowledgementCleared(
-              icingaEvent as AcknowledgementClearedEvent);
+          handleAcknowledgementCleared(
+              this, icingaEvent as AcknowledgementClearedEvent);
           break;
         case 'CommentAdded':
-          _handleCommentAdded(icingaEvent as CommentAddedEvent);
+          handleCommentAdded(this, icingaEvent as CommentAddedEvent);
           break;
         case 'CommentRemoved':
-          _handleCommentRemoved(icingaEvent as CommentRemovedEvent);
+          handleCommentRemoved(this, icingaEvent as CommentRemovedEvent);
           break;
         case 'DowntimeAdded':
-          _handleDowntimeAdded(icingaEvent as DowntimeAddedEvent);
+          handleDowntimeAdded(this, icingaEvent as DowntimeAddedEvent);
           break;
         case 'DowntimeRemoved':
-          _handleDowntimeRemoved(icingaEvent as DowntimeRemovedEvent);
+          handleDowntimeRemoved(this, icingaEvent as DowntimeRemovedEvent);
           break;
         case 'DowntimeStarted':
-          _handleDowntimeStarted(icingaEvent as DowntimeStartedEvent);
+          handleDowntimeStarted(this, icingaEvent as DowntimeStartedEvent);
           break;
         case 'DowntimeTriggered':
-          _handleDowntimeTriggered(icingaEvent as DowntimeTriggeredEvent);
+          handleDowntimeTriggered(this, icingaEvent as DowntimeTriggeredEvent);
           break;
         case 'ObjectCreated':
-          _handleObjectCreated(icingaEvent as ObjectCreatedEvent);
+          handleObjectCreated(this, icingaEvent as ObjectCreatedEvent);
           break;
         case 'ObjectModified':
-          _handleObjectModified(icingaEvent as ObjectModifiedEvent);
+          handleObjectModified(this, icingaEvent as ObjectModifiedEvent);
           break;
         case 'ObjectDeleted':
-          _handleObjectDeleted(icingaEvent as ObjectDeletedEvent);
+          handleObjectDeleted(this, icingaEvent as ObjectDeletedEvent);
           break;
         default:
-          _handleUnknownEvent(icingaEvent as UnknownEvent);
+          handleUnknownEvent(this, icingaEvent as UnknownEvent);
       }
     } catch (e) {
       session.log('Failed to process event: $e', level: LogLevel.error);
@@ -631,12 +287,35 @@ class Icinga2EventListener {
       String? service, int state, String? message,
       {DateTime? at}) async {
     try {
+      // Only persist history for hosts we're interested in broadcasting.
+      // This keeps persistent logs consistent with what is shown in the
+      // realtime UI and avoids storing noise for unrelated hosts.
+      if (!_shouldBroadcastForHost(host)) return;
+
+      // Do not persist plugin/check output (may contain secrets). Instead
+      // persist a formatted, human-friendly message that matches the
+      // broadcast format (emoji + state label + host/service) so the
+      // history shown in the UI looks identical to the realtime logs.
+      final stateNames = {0: 'OK', 1: 'WARNING', 2: 'CRITICAL', 3: 'UNKNOWN'};
+      final emoji = (state == 2)
+          ? '\uD83D\uDEA8' // 🚨 CRITICAL siren, aligns with broadcast
+          : (state == 1)
+              ? '\u26A0\uFE0F' // ⚠️
+              : (state == 0)
+                  ? '\u2705' // ✅
+                  : '';
+      final label = stateNames[state] ?? 'STATE:$state';
+      final hostSvc = _hostServiceLabel(host, service);
+      final formattedMessage =
+          '$emoji ALERT ${label == 'OK' ? 'RECOVERY' : label}: $hostSvc';
+
       final entry = AlertHistory(
         host: host,
         service: service,
         canonicalKey: canonicalKey,
         state: state,
-        message: message,
+        // Persist the formatted message only (no plugin output)
+        message: formattedMessage,
         createdAt: at ?? DateTime.now(),
       );
 
@@ -667,6 +346,82 @@ class Icinga2EventListener {
       _retentionTimer?.cancel();
     } catch (_) {}
     _retentionTimer = null;
+  }
+
+  /// Start a periodic job that checks current Icinga states and backfills
+  /// a missing OK recovery broadcast if needed (for target host only).
+  void _startRecoveryBackfillJob() {
+    // Run every 60 seconds. This is intentionally light-weight and filtered
+    // to the target host to avoid load.
+    _recoveryBackfillTimer?.cancel();
+    _recoveryBackfillTimer =
+        Timer.periodic(Duration(seconds: config.recoveryBackfillSeconds), (_) {
+      unawaited(_runRecoveryBackfill());
+    });
+  }
+
+  Future<void> _runRecoveryBackfill() async {
+    try {
+      // Require Dio to be initialized
+      if (_dio == null) return;
+
+      // Only consider the integrasjoner host to keep the query small.
+      final url =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/services';
+      final credentials =
+          base64Encode(utf8.encode('${config.username}:${config.password}'));
+      final headers = {
+        'Authorization': 'Basic $credentials',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-HTTP-Method-Override': 'GET',
+      };
+      final body = jsonEncode({
+        'filter': 'host.name=="integrasjoner"',
+        'attrs': ['name', 'state', 'host_name'],
+      });
+
+      final response = await _dio!
+          .post(url, data: body, options: dio.Options(headers: headers))
+          .timeout(Duration(seconds: 20));
+      if (response.statusCode != 200) return;
+
+      final data =
+          response.data is String ? jsonDecode(response.data) : response.data;
+      final results = (data['results'] as List?) ?? const [];
+      for (final serviceData in results) {
+        final attrs = serviceData['attrs'] as Map<String, dynamic>?;
+        if (attrs == null) continue;
+        final host = (attrs['host_name'] ?? '').toString();
+        if (!_shouldBroadcastForHost(host)) continue;
+        final service = (attrs['name'] ?? '').toString();
+        final state = (attrs['state'] as num?)?.toInt() ?? 3;
+        final key = _canonicalKey(host, service);
+
+        // If Icinga says OK but our last seen or last broadcast was non-OK,
+        // synthesize a recovery broadcast.
+        final lastSeen = _persistedStates[key]?.lastState;
+        final lastBroadcast = _lastBroadcastState[key];
+        if (state == 0 &&
+            ((lastSeen != null && lastSeen != 0) ||
+                (lastBroadcast != null && lastBroadcast != 0))) {
+          final msg =
+              '✅ ALERT RECOVERY: ${_hostServiceLabel(host, service)} (backfill)';
+          LogBroadcaster.broadcastLog(msg);
+          // Update local tracking and persistence to reflect recovery.
+          _lastBroadcastState[key] = 0;
+          _lastBroadcastAt[key] = DateTime.now();
+          await _persistState(key, host, service, 0);
+          // Persist history for backfilled recovery as well
+          unawaited(_persistHistory(key, host, service, 0, null));
+        }
+      }
+    } catch (e) {
+      // Keep errors quiet; this is a best-effort job.
+      try {
+        session.log('Recovery backfill failed: $e', level: LogLevel.debug);
+      } catch (_) {}
+    }
   }
 
   int _readRetentionDaysFromConfig() {
@@ -731,434 +486,63 @@ class Icinga2EventListener {
   }
 
   /// Return true if we should broadcast this state for the given key.
-  /// Ensures we only broadcast a given state once per key until it changes.
+  /// Only broadcast when the state actually changes for the canonical key.
   bool _shouldBroadcastForKey(String key, int state) {
-    final last = _lastBroadcastState[key];
-    // Debug: log transitions to help understand missed broadcasts
-    if (last == state) {
-      session.log('No broadcast for $key: state unchanged ($state)',
+    final lastState = _lastBroadcastState[key];
+    if (lastState == state) {
+      // No state change; skip broadcasting to avoid periodic duplicates
+      session.log('Skip broadcast for $key (unchanged state: $state)',
           level: LogLevel.debug);
       return false;
     }
+
+    // State actually changed; record and allow broadcast
     session.log(
-        'Broadcasting for $key: state changed ${last ?? 'null'} -> $state',
+        'Broadcasting for $key: state changed ${lastState ?? 'null'} -> $state',
         level: LogLevel.debug);
     _lastBroadcastState[key] = state;
+    _lastBroadcastAt[key] = DateTime.now();
     return true;
+  }
+
+  /// Decide whether to broadcast a recovery (state=0) even if we didn't
+  /// previously broadcast the alert state (e.g., only soft criticals).
+  ///
+  /// Logic:
+  /// - If the last seen persisted state (from DB) was non-OK, broadcast.
+  /// - Otherwise fall back to the last broadcast state check.
+  bool _shouldBroadcastRecovery(String key) {
+    final lastSeen = _persistedStates[key]?.lastState;
+    final lastBroadcast = _lastBroadcastState[key];
+    if (lastSeen != null && lastSeen != 0) {
+      session.log(
+          'Broadcasting recovery for $key based on last seen persisted state=$lastSeen -> 0',
+          level: LogLevel.debug);
+      _lastBroadcastState[key] = 0;
+      _lastBroadcastAt[key] = DateTime.now();
+      return true;
+    }
+
+    if (lastBroadcast != 0) {
+      session.log(
+          'Broadcasting recovery for $key based on last broadcast state=$lastBroadcast -> 0',
+          level: LogLevel.debug);
+      _lastBroadcastState[key] = 0;
+      _lastBroadcastAt[key] = DateTime.now();
+      return true;
+    }
+
+    session.log(
+        'Skip recovery broadcast for $key (lastSeen=${lastSeen ?? 'null'}, lastBroadcast=${lastBroadcast ?? 'null'})',
+        level: LogLevel.debug);
+    return false;
   }
 
   /// Convert a check_result map or state string/exit code to an integer state code.
   /// 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN
   // NOTE: _stateCodeFromCheckResult was removed because it was unused.
 
-  /// Handle check result events
-  void _handleCheckResult(CheckResultEvent event) {
-    // Process check result based on state and exit code
-    final rawState = event.checkResult['state'];
-    final exitCode = event.checkResult['exit_code'] ?? -1;
-    final output = event.checkResult['output'] ?? '';
-
-    // Determine numeric state code robustly: accept numeric codes or string names
-    int stateCode;
-    if (rawState is num) {
-      stateCode = rawState.toInt();
-    } else if (rawState is String) {
-      switch (rawState.toUpperCase()) {
-        case 'OK':
-          stateCode = 0;
-          break;
-        case 'WARNING':
-          stateCode = 1;
-          break;
-        case 'CRITICAL':
-          stateCode = 2;
-          break;
-        case 'UNKNOWN':
-        default:
-          stateCode = 3;
-      }
-    } else {
-      // Fallback to exitCode if state not provided
-      stateCode = (exitCode >= 0)
-          ? (exitCode == 2 ? 2 : (exitCode == 1 ? 1 : (exitCode == 0 ? 0 : 3)))
-          : 3;
-    }
-
-    // Check if this is a hard state (state_type == 1) - if not available, assume hard for critical
-    final stateType =
-        event.checkResult['state_type'] ?? (exitCode == 2 ? 1 : 0);
-    final isHardState = stateType == 1;
-
-    // Check if service is in downtime or acknowledged
-    final isInDowntime = (event.checkResult['downtime_depth'] ?? 0) > 0;
-    final isAcknowledged = event.checkResult['acknowledgement'] ?? false;
-
-    // Don't alert if in downtime or acknowledged
-    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
-
-    // Only alert on HARD states for WARNING and CRITICAL, but always log OK recoveries
-    final canonical = _canonicalKey(event.host, event.service);
-    _persistState(canonical, event.host, event.service, stateCode);
-    // Persist history entry (non-blocking)
-    unawaited(_persistHistory(canonical, event.host, event.service, stateCode,
-        output == '' ? null : output));
-    session.log(
-        'CheckResult decision for $canonical: stateCode=$stateCode exitCode=$exitCode isHard=$isHardState shouldAlert=$shouldAlert',
-        level: LogLevel.debug);
-
-    if (stateCode == 2 && shouldAlert) {
-      session.log(
-          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.error);
-      session.log(
-          'ALERT: Service ${event.service} on ${event.host} is CRITICAL!',
-          level: LogLevel.error);
-      // TODO: Send critical alert to duty officer
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, 2)) {
-        LogBroadcaster.broadcastLog(
-            '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output');
-      }
-    } else if (stateCode == 1 && shouldAlert) {
-      session.log(
-          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.warning);
-      session.log('ALERT: Service ${event.service} on ${event.host} is WARNING',
-          level: LogLevel.warning);
-      // TODO: Send warning notification
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, 1)) {
-        LogBroadcaster.broadcastLog(
-            '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output');
-      }
-    } else if (stateCode == 0) {
-      // OK recovery: always log and broadcast recoveries
-      // For recoveries, do not include plugin/check output (may contain secrets).
-      session.log(
-          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)}',
-          level: LogLevel.info);
-      session.log(
-          'RECOVERY: Service ${event.service} on ${event.host} is back OK',
-          level: LogLevel.info);
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, 0)) {
-        LogBroadcaster.broadcastLog(
-            '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)}');
-      }
-
-      // Ensure we record the recovery state so subsequent alerts are
-      // recognized. If the recovery was not broadcast for some reason
-      // (soft state, suppression, etc.), updating the last state here
-      // prevents the previous ALERT state from blocking future alerts.
-      try {
-        _lastBroadcastState[canonical] = 0;
-        session.log('Recorded recovery state for $canonical -> 0',
-            level: LogLevel.debug);
-      } catch (_) {}
-    } else if (isInDowntime || isAcknowledged) {
-      // Log suppressed alerts due to downtime/acknowledgement
-      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
-      session.log(
-          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.info);
-      session.log(
-          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $stateCode',
-          level: LogLevel.info);
-    } else if (stateCode == 2 && !isHardState) {
-      // Log soft critical states without alerting
-      session.log(
-          'SOFT CRITICAL: ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.warning);
-    } else if (stateCode == 1 && !isHardState) {
-      // Log soft warning states without alerting
-      session.log(
-          'SOFT WARNING: ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.info);
-    } else {
-      session.log(
-          'UNKNOWN: ${_hostServiceLabel(event.host, event.service)} - $output',
-          level: LogLevel.warning);
-    }
-
-    // TODO: Store check result in database for historical tracking
-    // TODO: Update monitoring dashboard
-  }
-
-  /// Handle state change events
-  void _handleStateChange(StateChangeEvent event) {
-    // Map state codes to readable names
-    final stateNames = {
-      0: 'OK',
-      1: 'WARNING',
-      2: 'CRITICAL',
-      3: 'UNKNOWN',
-      99: 'PENDING'
-    };
-
-    final stateTypeNames = {0: 'SOFT', 1: 'HARD'};
-
-    final stateName = stateNames[event.state] ?? 'UNKNOWN';
-    final stateTypeName = stateTypeNames[event.stateType] ?? 'UNKNOWN';
-
-    // Only alert on HARD states (stateType == 1), not SOFT states (stateType == 0)
-    final isHardState = event.stateType == 1;
-
-    // Check if service is in downtime or acknowledged
-    final isInDowntime = event.downtimeDepth > 0;
-    final isAcknowledged = event.acknowledgement;
-
-    // Don't alert if in downtime or acknowledged
-    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
-
-    // Log state changes with appropriate severity - but only alert on hard states
-    final canonical = _canonicalKey(event.host, event.service);
-    _persistState(canonical, event.host, event.service, event.state);
-    // Persist history entry (non-blocking)
-    unawaited(_persistHistory(
-        canonical, event.host, event.service, event.state, null));
-    session.log(
-        'StateChange decision for $canonical: state=${event.state} type=${event.stateType} isHard=$isHardState shouldAlert=$shouldAlert',
-        level: LogLevel.debug);
-    if (event.state == 2 && shouldAlert) {
-      // CRITICAL - Hard state only, not in downtime/acknowledged
-      session.log(
-          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
-          level: LogLevel.error);
-      final logMessage =
-          '🚨 ALERT CRITICAL: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
-      session.log(logMessage, level: LogLevel.error);
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, event.state)) {
-        LogBroadcaster.broadcastLog(logMessage);
-      }
-      // TODO: Trigger critical alert escalation
-    } else if (event.state == 1 && shouldAlert) {
-      // WARNING - Hard state only, not in downtime/acknowledged
-      session.log(
-          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
-          level: LogLevel.warning);
-      final logMessage =
-          '⚠️ ALERT WARNING: ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
-      session.log(logMessage, level: LogLevel.warning);
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, event.state)) {
-        LogBroadcaster.broadcastLog(logMessage);
-      }
-      // TODO: Send warning notification
-    } else if (event.state == 0 && isHardState) {
-      // OK - Hard state recovery (always alert recoveries)
-      session.log(
-          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)} recovered to $stateName ($stateTypeName)',
-          level: LogLevel.info);
-      final logMessage =
-          '✅ ALERT RECOVERY: ${_hostServiceLabel(event.host, event.service)} recovered to $stateName ($stateTypeName)';
-      session.log(logMessage, level: LogLevel.info);
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, event.state)) {
-        LogBroadcaster.broadcastLog(logMessage);
-      }
-      // TODO: Clear active alerts
-    } else if (isInDowntime || isAcknowledged) {
-      // Log suppressed alerts due to downtime/acknowledgement
-      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
-      session.log(
-          'ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
-          level: LogLevel.info);
-      final logMessage =
-          '🔕 ALERT SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $stateName';
-      session.log(logMessage, level: LogLevel.info);
-      if (!_shouldBroadcastForHost(event.host)) {
-        session.log('Skipping broadcast for $canonical: host filter mismatch',
-            level: LogLevel.debug);
-      } else if (_shouldBroadcastForKey(canonical, event.state)) {
-        LogBroadcaster.broadcastLog(logMessage);
-      }
-    } else {
-      // Log soft states or unknown states without alerting
-      session.log(
-          'STATE CHANGE (Soft): ${_hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)',
-          level: LogLevel.info);
-    }
-
-    // TODO: Update service status dashboard
-    // TODO: Record state change history
-  }
-
-  /// Handle notification events
-  void _handleNotification(NotificationEvent event) {
-    // Process different types of notifications
-    final notificationType = event.notificationType;
-    final users = event.users.join(', ');
-    final command = event.command;
-
-    // Check if this notification is for a hard state
-    final stateType = event.checkResult['state_type'] ??
-        1; // Default to hard if not specified
-    final isHardState = stateType == 1;
-
-    // Check if service is in downtime or acknowledged
-    final isInDowntime = (event.checkResult['downtime_depth'] ?? 0) > 0;
-    final isAcknowledged = event.checkResult['acknowledgement'] ?? false;
-
-    // Don't alert if in downtime or acknowledged
-    final shouldAlert = isHardState && !isInDowntime && !isAcknowledged;
-
-    session.log(
-        'NOTIFICATION: $notificationType sent to $users via $command for ${_hostServiceLabel(event.host, event.service)} (State: ${isHardState ? 'HARD' : 'SOFT'})',
-        level: LogLevel.info);
-
-    // TODO: Store notification in database for audit trail
-    // TODO: Forward notification to external systems (SMS, email, etc.)
-    // TODO: Update notification dashboard
-
-    // Only escalate on hard state notifications, not in downtime/acknowledged
-    if (shouldAlert &&
-        (notificationType.contains('PROBLEM') ||
-            notificationType.contains('CRITICAL'))) {
-      session.log(
-          '🚨 PROBLEM NOTIFICATION: Immediate attention required for ${_hostServiceLabel(event.host, event.service)}',
-          level: LogLevel.warning);
-      session.log(
-          'PROBLEM NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} needs immediate attention!',
-          level: LogLevel.warning);
-      // TODO: Escalate to on-call duty officer
-    } else if (shouldAlert &&
-        (notificationType.contains('RECOVERY') ||
-            notificationType.contains('OK'))) {
-      session.log(
-          '✅ RECOVERY NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} has recovered',
-          level: LogLevel.info);
-      session.log(
-          'RECOVERY NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} is back OK',
-          level: LogLevel.info);
-      // TODO: Clear active alerts
-    } else if (isInDowntime || isAcknowledged) {
-      // Log suppressed notifications due to downtime/acknowledgement
-      final reason = isInDowntime ? 'DOWNTIME' : 'ACKNOWLEDGED';
-      session.log(
-          'NOTIFICATION SUPPRESSED ($reason): $notificationType for ${_hostServiceLabel(event.host, event.service)}',
-          level: LogLevel.info);
-      session.log(
-          'NOTIFICATION SUPPRESSED ($reason): ${_hostServiceLabel(event.host, event.service)} - $notificationType',
-          level: LogLevel.info);
-    } else if (!isHardState) {
-      session.log(
-          'SOFT STATE NOTIFICATION: ${_hostServiceLabel(event.host, event.service)} - $notificationType (not escalating)',
-          level: LogLevel.info);
-    }
-  }
-
-  /// Handle acknowledgement set events
-  void _handleAcknowledgementSet(AcknowledgementSetEvent event) {
-    final author = event.author;
-    final comment = event.comment;
-
-    session.log(
-        'ACKNOWLEDGEMENT SET: ${_hostServiceLabel(event.host, event.service)} acknowledged by $author: $comment',
-        level: LogLevel.info);
-
-    // TODO: Store acknowledgement in database
-    // TODO: Update incident management system
-    // TODO: Notify team that issue is being handled
-    // TODO: Stop escalation notifications for this service
-  }
-
-  /// Handle acknowledgement cleared events
-  void _handleAcknowledgementCleared(AcknowledgementClearedEvent event) {
-    session.log(
-        'ACKNOWLEDGEMENT CLEARED: ${_hostServiceLabel(event.host, event.service)} acknowledgement removed',
-        level: LogLevel.info);
-
-    // TODO: Update incident management system
-    // TODO: Resume escalation notifications if problem persists
-    // TODO: Notify team that acknowledgement was cleared
-  }
-
-  /// Handle comment added events
-  void _handleCommentAdded(CommentAddedEvent event) {
-    // TODO: Implement comment added processing
-    session.log('Processing comment added: ${event.comment}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle comment removed events
-  void _handleCommentRemoved(CommentRemovedEvent event) {
-    // TODO: Implement comment removed processing
-    session.log('Processing comment removed: ${event.comment}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle downtime added events
-  void _handleDowntimeAdded(DowntimeAddedEvent event) {
-    // TODO: Implement downtime added processing
-    session.log('Processing downtime added: ${event.downtime}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle downtime removed events
-  void _handleDowntimeRemoved(DowntimeRemovedEvent event) {
-    // TODO: Implement downtime removed processing
-    session.log('Processing downtime removed: ${event.downtime}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle downtime started events
-  void _handleDowntimeStarted(DowntimeStartedEvent event) {
-    // TODO: Implement downtime started processing
-    session.log('Processing downtime started: ${event.downtime}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle downtime triggered events
-  void _handleDowntimeTriggered(DowntimeTriggeredEvent event) {
-    // TODO: Implement downtime triggered processing
-    session.log('Processing downtime triggered: ${event.downtime}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle object created events
-  void _handleObjectCreated(ObjectCreatedEvent event) {
-    // TODO: Implement object created processing
-    session.log(
-        'Processing object created: ${event.objectType} ${event.objectName}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle object modified events
-  void _handleObjectModified(ObjectModifiedEvent event) {
-    // TODO: Implement object modified processing
-    session.log(
-        'Processing object modified: ${event.objectType} ${event.objectName}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle object deleted events
-  void _handleObjectDeleted(ObjectDeletedEvent event) {
-    // TODO: Implement object deleted processing
-    session.log(
-        'Processing object deleted: ${event.objectType} ${event.objectName}',
-        level: LogLevel.debug);
-  }
-
-  /// Handle unknown events
-  void _handleUnknownEvent(UnknownEvent event) {
-    // TODO: Implement unknown event processing
-    session.log('Processing unknown event type: ${event.type}',
-        level: LogLevel.debug);
-    session.log('Raw data: ${event.rawData}', level: LogLevel.debug);
-  }
+  // All specific handlers moved to handlers.dart
 
   /// Schedule reconnection attempt
   void _scheduleReconnect() {
@@ -1187,10 +571,131 @@ class Icinga2EventListener {
 
     _reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
       if (!_isShuttingDown) {
-        _connect();
+        _connectWithDio();
       }
     });
   }
+
+  /// Alternative event stream connection using Dio. This can be more robust
+  /// in some environments (proxies, TLS, header handling) and gives us
+  /// explicit control over timeouts.
+  Future<void> _connectWithDio() async {
+    if (_isShuttingDown) return;
+
+    try {
+      session.log(
+          'Iicinga2EventListener(Dio): Connecting to Icinga2 at ${config.scheme}://${config.host}:${config.port}',
+          level: LogLevel.info);
+
+      final options = dio.BaseOptions(
+        baseUrl: '${config.scheme}://${config.host}:${config.port}',
+        connectTimeout: Duration(seconds: config.timeout),
+        receiveTimeout:
+            Duration(seconds: config.streamInactivitySeconds + config.timeout),
+        sendTimeout: Duration(seconds: config.timeout),
+        headers: {
+          'Authorization':
+              'Basic ${base64Encode(utf8.encode('${config.username}:${config.password}'))}',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Connection': 'keep-alive',
+        },
+      );
+
+      // Create Dio with optional bad cert handling
+      final d = dio.Dio(options);
+      final adapter = dio_io.IOHttpClientAdapter();
+      adapter.createHttpClient = () {
+        final client = HttpClient();
+        if (config.skipCertificateVerification) {
+          client.badCertificateCallback = (cert, host, port) => true;
+        }
+        return client;
+      };
+      d.httpClientAdapter = adapter;
+
+      _dio = d;
+
+      // Test status quickly
+      try {
+        final r = await _dio!
+            .get('/v1/status')
+            .timeout(Duration(seconds: config.timeout));
+        session.log('Iicinga2EventListener(Dio): /v1/status ${r.statusCode}',
+            level: LogLevel.debug);
+      } catch (e) {
+        session.log('Iicinga2EventListener(Dio): status check failed: $e',
+            level: LogLevel.debug);
+      }
+
+      final requestBody = <String, dynamic>{
+        'queue': config.queue,
+        'types': config.types,
+        if (config.filter.isNotEmpty) 'filter': config.filter,
+      };
+
+      session.log(
+          'Iicinga2EventListener(Dio): Subscribing to /v1/events queue="${config.queue}" filter="${config.filter}"',
+          level: LogLevel.debug);
+
+      final response = await _dio!.post<dio.ResponseBody>(
+        '/v1/events',
+        data: jsonEncode(requestBody),
+        options: dio.Options(
+          responseType: dio.ResponseType.stream,
+          followRedirects: true,
+          receiveTimeout: Duration(
+              seconds: config.streamInactivitySeconds + config.timeout),
+        ),
+      );
+
+      if (response.statusCode != 200 || response.data == null) {
+        session.log(
+            'Iicinga2EventListener(Dio): Failed to connect stream: ${response.statusCode}',
+            level: LogLevel.error);
+        throw Exception('Event stream connection failed');
+      }
+
+      _retryCount = 0;
+
+      final stream = response.data!.stream
+          .map((chunk) => utf8.decode(chunk))
+          .transform(const LineSplitter())
+          .timeout(Duration(seconds: config.streamInactivitySeconds),
+              onTimeout: (sink) {
+        session.log(
+            'Iicinga2EventListener(Dio): Stream inactivity timeout; reconnecting',
+            level: LogLevel.warning);
+        try {
+          sink.close();
+        } catch (_) {}
+      });
+
+      await for (final line in stream) {
+        if (_isShuttingDown) break;
+        if (line.trim().isEmpty) continue;
+        try {
+          final event = jsonDecode(line);
+          _lastEventAt = DateTime.now();
+          _handleEvent(event);
+        } catch (e) {
+          session.log('Dio stream parse error: $e', level: LogLevel.warning);
+        }
+      }
+
+      if (config.reconnectEnabled && !_isShuttingDown) {
+        _scheduleReconnect();
+      }
+    } catch (e) {
+      session.log('Iicinga2EventListener(Dio): Connection error: $e',
+          level: LogLevel.error);
+      if (config.reconnectEnabled && !_isShuttingDown) {
+        _scheduleReconnect();
+      }
+    }
+  }
+
+// (Removed custom ResponseBodyStreamWrapper; using dio.ResponseBody instead.)
 
   /// Stop the event listener and clean up resources
   /// Cancels any pending reconnect timer and closes the HTTP client.
@@ -1200,17 +705,18 @@ class Icinga2EventListener {
     // Stop retention timer when shutting down so it doesn't fire after stop.
     _stopRetentionJob();
 
+    // Stop recovery backfill timer as well
+    try {
+      _recoveryBackfillTimer?.cancel();
+    } catch (_) {}
+    _recoveryBackfillTimer = null;
+
     if (_reconnectTimer?.isActive ?? false) {
       _reconnectTimer?.cancel();
     }
     _reconnectTimer = null;
 
-    try {
-      _ioClient?.close();
-    } catch (_) {
-      // ignore errors during shutdown
-    }
-    _ioClient = null;
+    // Dio will be GC'd; no explicit close required
 
     session.log('Icinga2EventListener: Stopped', level: LogLevel.info);
   }

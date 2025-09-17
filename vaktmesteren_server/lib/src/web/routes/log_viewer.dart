@@ -2,12 +2,67 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:vaktmesteren_server/src/web/widgets/log_viewer_page.dart';
+import 'package:vaktmesteren_server/src/generated/protocol.dart';
 import 'package:serverpod/serverpod.dart';
 
 class RouteLogViewer extends WidgetRoute {
   @override
   Future<Widget> build(Session session, HttpRequest request) async {
-    return LogViewerPage();
+    // Server-side: attempt to load recent alert history so the initial HTML
+    // contains recent OK/ALERTs. This is best-effort and won't fail page
+    // rendering if the DB or ORM isn't available.
+    List<Map<String, dynamic>> alertRows = [];
+    try {
+      final threeDaysAgo = DateTime.now().toUtc().subtract(Duration(days: 3));
+      final rows = await AlertHistory.db.find(
+        session,
+        where: (t) => t.createdAt >= threeDaysAgo,
+        limit: 200,
+        orderBy: (t) => t.createdAt,
+        orderDescending: true,
+      );
+      // Filter server-side so only entries originating from the
+      // `integrasjoner` host are shown in the UI. This prevents legacy
+      // persisted rows from other hosts (e.g. pve3.*) appearing in the
+      // alert history view.
+      final filtered = rows.where((r) {
+        try {
+          final baseHost = r.host.split('.').first.toLowerCase().trim();
+          return baseHost == 'integrasjoner';
+        } catch (_) {
+          return false;
+        }
+      }).toList();
+      alertRows = filtered.map((r) => r.toJson()).toList();
+    } catch (e) {
+      try {
+        session.log('RouteLogViewer: failed to load alert history: $e',
+            level: LogLevel.debug);
+      } catch (_) {}
+    }
+
+    final page = LogViewerPage();
+    try {
+      page.values['initialAlertHistory'] =
+          Uri.encodeComponent(jsonEncode(alertRows));
+    } catch (_) {
+      page.values['initialAlertHistory'] = '';
+    }
+
+    // Embed logo as data URL if available so no extra HTTP request is needed.
+    try {
+      final logoFile = File('assets/logo.png');
+      if (await logoFile.exists()) {
+        final bytes = await logoFile.readAsBytes();
+        final b64 = base64Encode(bytes);
+        page.values['logoDataUrl'] = 'data:image/png;base64,$b64';
+      } else {
+        page.values['logoDataUrl'] = '';
+      }
+    } catch (_) {
+      page.values['logoDataUrl'] = '';
+    }
+    return page;
   }
 }
 
@@ -34,6 +89,10 @@ class LogBroadcaster {
   // can return something useful if needed.
   static final List<String> _recentLogs = <String>[];
   static const int _recentLogsMax = 200;
+  // Dedupe identical messages within a window to avoid repeated
+  // broadcasts (regardless of the originating listener). Keyed by the
+  // message text; stores last broadcast DateTime.
+  static final Map<String, DateTime> _lastMessageAt = {};
   // Serverpod instance used for creating sessions to persist logs.
   // Persistence will be wired after generated ORM is available.
 
@@ -49,7 +108,54 @@ class LogBroadcaster {
   }
 
   static void broadcastLog(String message) {
+    // Defensive filter: some code paths may emit alert-style messages for
+    // hosts we don't want broadcast to the realtime UI. Ensure we only
+    // broadcast ALERT/RECOVERY/WARNING/CRITICAL messages that originate
+    // from the `integrasjoner` host so the frontend doesn't show unrelated
+    // hosts like pve3.*.
+    final lower = message.toLowerCase();
+    if (lower.contains('alert') ||
+        lower.contains('recovery') ||
+        lower.contains('warning') ||
+        lower.contains('critical')) {
+      // Try to extract a host token from message. Common formats used in
+      // this codebase include "...: host/service - output" or
+      // "...: host/service" and "host/service". We'll look for the
+      // last whitespace-separated token containing a '/' and treat the
+      // left side as the host.
+      final parts = message.split(RegExp(r'\s+'));
+      for (var i = parts.length - 1; i >= 0; i--) {
+        final token = parts[i];
+        if (token.contains('/')) {
+          final hostPart = token
+              .split('/')
+              .first
+              .split(':')
+              .first
+              .split('-')
+              .first
+              .trim()
+              .toLowerCase();
+          final baseHost = hostPart.split('.').first;
+          if (baseHost != 'integrasjoner') {
+            // Drop this broadcast silently.
+            return;
+          }
+          break;
+        }
+      }
+    }
+
+    // Dedupe by message content: skip identical messages within 15 seconds.
+    final now = DateTime.now();
+    final lastAt = _lastMessageAt[message];
+    if (lastAt != null && now.difference(lastAt).inSeconds < 15) {
+      // Skip broadcasting rapid duplicate message
+      return;
+    }
+
     // Add to stream
+    _lastMessageAt[message] = now;
     _logController.add(message);
 
     // Log to console for easier debugging
@@ -108,9 +214,40 @@ class RouteLogPoll extends Route {
 
     try {
       session.log(
-          'RouteLogPoll: returning ${LogBroadcaster._recentLogs.length} recent logs',
+          'RouteLogPoll: returning ${LogBroadcaster._recentLogs.length} recent logs and recent alert history',
           level: LogLevel.debug);
-      final payload = {'logs': List<String>.from(LogBroadcaster._recentLogs)};
+
+      // Attempt to load recent alert history (best-effort). If AlertHistory
+      // ORM isn't available yet or DB is unreachable, fall back to empty list.
+      List<Map<String, dynamic>> alertRows = [];
+      try {
+        final threeDaysAgo = DateTime.now().toUtc().subtract(Duration(days: 3));
+        final rows = await AlertHistory.db.find(
+          session,
+          where: (t) => t.createdAt >= threeDaysAgo,
+          limit: 200,
+          orderBy: (t) => t.createdAt,
+          orderDescending: true,
+        );
+        final filtered = rows.where((r) {
+          try {
+            final baseHost = r.host.split('.').first.toLowerCase().trim();
+            return baseHost == 'integrasjoner';
+          } catch (_) {
+            return false;
+          }
+        }).toList();
+        alertRows = filtered.map((r) => r.toJson()).toList();
+      } catch (e) {
+        // ignore DB errors here - return recent logs anyway
+        session.log('RouteLogPoll: could not load alert history: $e',
+            level: LogLevel.debug);
+      }
+
+      final payload = {
+        'logs': List<String>.from(LogBroadcaster._recentLogs),
+        'alertHistory': alertRows,
+      };
       request.response.write(jsonEncode(payload));
       await request.response.close();
       return true;
@@ -171,7 +308,13 @@ class RouteLogWebSocket extends Route {
     }
 
     try {
-      final socket = await WebSocketTransformer.upgrade(request);
+      final t0 = DateTime.now();
+      final socket = await WebSocketTransformer.upgrade(
+        request,
+        // Disable permessage-deflate to avoid any proxy negotiation delays
+        compression: CompressionOptions.compressionOff,
+      );
+      final dt = DateTime.now().difference(t0);
       final remote = request.connectionInfo?.remoteAddress.address ?? 'unknown';
       final port = request.connectionInfo?.remotePort ?? 0;
 
@@ -193,6 +336,13 @@ class RouteLogWebSocket extends Route {
 
       safeLog('WebSocket: New connection from $remote:$port',
           level: LogLevel.info);
+      safeLog('WebSocket: Upgrade completed in ${dt.inMilliseconds} ms',
+          level: LogLevel.debug);
+
+      // Set a periodic ping to keep intermediaries from idling out the socket
+      try {
+        socket.pingInterval = const Duration(seconds: 30);
+      } catch (_) {}
 
       // Track subscribers for debugging
       LogBroadcaster._addSubscriber();
