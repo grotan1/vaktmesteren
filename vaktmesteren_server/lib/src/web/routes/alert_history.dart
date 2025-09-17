@@ -53,6 +53,22 @@ class RouteAlertHistoryJson extends Route {
 class RouteAlertHistoryPage extends WidgetRoute {
   @override
   Future<Widget> build(Session session, HttpRequest request) async {
-    return AlertHistoryPage();
+    final page = AlertHistoryPage();
+
+    // Embed logo as data URL if available so it can be used as favicon too.
+    try {
+      final logoFile = File('assets/logo.png');
+      if (await logoFile.exists()) {
+        final bytes = await logoFile.readAsBytes();
+        final b64 = base64Encode(bytes);
+        page.values['logoDataUrl'] = 'data:image/png;base64,$b64';
+      } else {
+        page.values['logoDataUrl'] = '';
+      }
+    } catch (_) {
+      page.values['logoDataUrl'] = '';
+    }
+
+    return page;
   }
 }

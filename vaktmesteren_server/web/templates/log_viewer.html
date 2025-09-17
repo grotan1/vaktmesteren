@@ -5,6 +5,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{title}}</title>
+    <link rel="icon" href="{{logoDataUrl}}" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -57,9 +58,17 @@
 
         .brand img {
             height: 120px;
+            /* slightly smaller to balance larger text */
             width: auto;
             display: block;
             border-radius: 6px;
+        }
+
+        /* Make the header caption larger and more prominent */
+        .brand .small {
+            font-size: 16px;
+            font-weight: 600;
+            color: #0f172a;
         }
 
         .controls {
@@ -167,7 +176,7 @@
         <header>
             <div class="brand">
                 <img src="{{logoDataUrl}}" alt="Logo" onerror="this.style.display='none'" />
-                <div class="small">Sanntids Icinga2 hendelsesstrøm</div>
+                <div class="small">Fikser feil når du sover</div>
             </div>
             <div class="controls">
                 <div id="connectionStatus" class="small">Kobler til...</div>
@@ -218,6 +227,12 @@
             let totalLogs = 0;
             let ws = null;
             let paused = false;
+            let reconnectAttempts = 0;
+            let reconnectTimer = null;
+            let lastHeartbeatTs = Date.now();
+            const MAX_BACKOFF_MS = 30000; // 30s cap
+            const BASE_BACKOFF_MS = 1000; // 1s initial
+            let clientKeepaliveTimer = null;
 
             // Locale and formatting options: force Norwegian (nb-NO) and 24-hour time
             const __locale = 'nb-NO';
@@ -274,6 +289,17 @@
 
             function clearLogs() { logContainer.innerHTML = ''; totalLogs = 0; totalLogsEl.textContent = '0'; }
 
+            function scheduleReconnect() {
+                // Exponential backoff with jitter: base * 2^n + random(0..250ms)
+                reconnectAttempts = Math.min(reconnectAttempts + 1, 10);
+                const backoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, reconnectAttempts - 1), MAX_BACKOFF_MS);
+                const jitter = Math.floor(Math.random() * 250);
+                const delay = backoff + jitter;
+                if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+                reconnectTimer = setTimeout(() => { reconnectTimer = null; startWS(); }, delay);
+                console.debug(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+            }
+
             function startWS() {
                 try {
                     // Avoid creating multiple concurrent WebSocket connections.
@@ -294,11 +320,59 @@
                         const dt = Math.round(performance.now() - t0);
                         console.debug('WebSocket connected in', dt, 'ms');
                         setConnection(true, 'Tilkoblet (WebSocket)');
+                        lastHeartbeatTs = Date.now();
+                        reconnectAttempts = 0; // reset backoff on success
+                        // Start lightweight client keepalive so even on localhost
+                        // we generate periodic traffic (helps if control pings are ignored).
+                        try {
+                            if (clientKeepaliveTimer) { clearInterval(clientKeepaliveTimer); clientKeepaliveTimer = null; }
+                            clientKeepaliveTimer = setInterval(function () {
+                                try {
+                                    if (ws && ws.readyState === WebSocket.OPEN) {
+                                        ws.send(JSON.stringify({ type: 'client-keepalive', ts: new Date().toISOString() }));
+                                    }
+                                } catch (_) { }
+                            }, 30000);
+                        } catch (_) { }
                     };
-                    ws.onmessage = function (e) { try { const d = JSON.parse(e.data); if (d && d.type === 'log' && d.message) addLogEntry(d.message); else if (d && d.type === 'ping') updateTimestamp(); } catch (err) { addLogEntry(e.data); } };
-                    ws.onerror = function () { try { if (ws) ws.close(); } catch (_) { } setConnection(false, 'WS-feil'); ws = null; setTimeout(startWS, 2000); };
-                    ws.onclose = function () { setConnection(false, 'WebSocket lukket'); ws = null; setTimeout(startWS, 2000); };
-                } catch (e) { setConnection(false, 'WS mislyktes'); ws = null; setTimeout(startWS, 2000); }
+                    ws.onmessage = function (e) {
+                        try {
+                            const d = JSON.parse(e.data);
+                            if (d && d.type === 'log' && d.message) {
+                                addLogEntry(d.message);
+                                lastHeartbeatTs = Date.now();
+                            } else if (d && d.type === 'ping') {
+                                // Server heartbeat; update timestamp only.
+                                lastHeartbeatTs = Date.now();
+                                updateTimestamp();
+                            } else {
+                                // Unknown payload; treat as activity.
+                                lastHeartbeatTs = Date.now();
+                            }
+                        } catch (err) {
+                            // Non-JSON payload; still treat as log and activity.
+                            addLogEntry(e.data);
+                            lastHeartbeatTs = Date.now();
+                        }
+                    };
+                    ws.onerror = function () {
+                        try { if (ws) ws.close(); } catch (_) { }
+                        setConnection(false, 'WS-feil');
+                        ws = null;
+                        scheduleReconnect();
+                    };
+                    ws.onclose = function (ev) {
+                        setConnection(false, 'WebSocket lukket');
+                        ws = null;
+                        try {
+                            if (clientKeepaliveTimer) { clearInterval(clientKeepaliveTimer); clientKeepaliveTimer = null; }
+                        } catch (_) { }
+                        try {
+                            console.debug('WebSocket closed', { code: ev && ev.code, reason: ev && ev.reason });
+                        } catch (_) { }
+                        if (!paused) scheduleReconnect();
+                    };
+                } catch (e) { setConnection(false, 'WS mislyktes'); ws = null; scheduleReconnect(); }
             }
 
             // If the server embedded initial alert history, decode and render it
@@ -336,6 +410,22 @@
                 } catch (_) { }
                 // If WS failed to start earlier, try again after rendering
                 if (!ws) startWS();
+
+                // Watchdog: if no heartbeat or message within ~80s, consider the
+                // socket stale (some proxies silently drop connections) and
+                // force a reconnect.
+                setInterval(function () {
+                    try {
+                        const now = Date.now();
+                        const delta = now - lastHeartbeatTs;
+                        if (!paused && ws && ws.readyState === WebSocket.OPEN && delta > 80000) {
+                            console.debug('WebSocket watchdog: stale connection detected, restarting');
+                            try { ws.close(); } catch (_) { }
+                            ws = null;
+                            scheduleReconnect();
+                        }
+                    } catch (_) { }
+                }, 10000);
             })();
 
             document.getElementById('btnTest').addEventListener('click', function () { fetch(origin + '/logs/test').catch(console.error); });
@@ -349,6 +439,7 @@
                     } catch (_) { }
                     ws = null; // ensure we clear the reference so startWS can create a new one later
                 } else {
+                    reconnectAttempts = 0;
                     startWS();
                 }
             });

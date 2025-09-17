@@ -341,7 +341,27 @@ class RouteLogWebSocket extends Route {
 
       // Set a periodic ping to keep intermediaries from idling out the socket
       try {
-        socket.pingInterval = const Duration(seconds: 30);
+        // Control-frame ping at a relatively short interval helps keep many
+        // intermediaries (LBs, proxies) from timing out idle connections.
+        socket.pingInterval = const Duration(seconds: 20);
+      } catch (_) {}
+
+      // In addition to control-frame pings, send an application-level JSON
+      // heartbeat. Some intermediaries do not consider WS pings as activity,
+      // but any data frame will refresh idle timers. Also lets the client
+      // update its "last update" timestamp.
+      Timer? appHeartbeat;
+      try {
+        appHeartbeat = Timer.periodic(const Duration(seconds: 25), (_) {
+          try {
+            socket.add(jsonEncode({
+              'type': 'ping',
+              'ts': DateTime.now().toIso8601String(),
+            }));
+          } catch (_) {
+            // Ignore send errors; socket.done handler will clean up.
+          }
+        });
       } catch (_) {}
 
       // Track subscribers for debugging
@@ -376,12 +396,44 @@ class RouteLogWebSocket extends Route {
         }
       });
 
+      // Drain any incoming client messages (e.g., client-side keepalives)
+      // so the socket doesn't accumulate unread frames. We currently treat
+      // all incoming messages as no-ops but may extend this in future.
+      try {
+        // ignore: cancel_subscriptions
+        final _incoming = socket.listen(
+          (data) {
+            // If client sends a JSON keepalive, we may echo back a pong to
+            // update its timestamp. For now, just ignore.
+            // Optionally validate payload size/type to avoid misuse.
+          },
+          onError: (Object e, StackTrace st) {
+            safeLog('WebSocket: Socket error: $e', level: LogLevel.error);
+          },
+          cancelOnError: true,
+        );
+        // Ensure we cancel the listener when socket closes
+        // (socket.done future below also executes).
+        // ignore: unawaited_futures
+        socket.done.whenComplete(() {
+          try {
+            _incoming.cancel();
+          } catch (_) {}
+        });
+      } catch (_) {}
+
       // ignore: unawaited_futures
       socket.done.then((_) {
-        safeLog('WebSocket: Client disconnected from $remote:$port',
+        final cc = socket.closeCode;
+        final cr = socket.closeReason;
+        safeLog(
+            'WebSocket: Client disconnected from $remote:$port (code=${cc ?? 'n/a'}, reason=${cr ?? 'n/a'})',
             level: LogLevel.info);
         try {
           subscription.cancel();
+        } catch (_) {}
+        try {
+          appHeartbeat?.cancel();
         } catch (_) {}
         // Update subscriber count
         LogBroadcaster._removeSubscriber();
