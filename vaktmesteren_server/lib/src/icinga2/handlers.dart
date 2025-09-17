@@ -185,11 +185,27 @@ Future<void> handleStateChange(
     final logMessage =
         '🔕 ALERT SUPPRESSED ($reason): ${s._hostServiceLabel(event.host, event.service)} changed to $stateName ($stateTypeName)';
     s.session.log(logMessage, level: LogLevel.info);
-    if (!s._shouldBroadcastForHost(event.host)) {
-      s.session.log('Skipping broadcast for $canonical: host filter mismatch',
-          level: LogLevel.debug);
-    } else if (s._shouldBroadcastForKey(canonical, event.state)) {
+    // Broadcast suppressed info for visibility, but DO NOT update last-broadcast state,
+    // otherwise a later real alert after downtime would be skipped as duplicate.
+    if (s._shouldBroadcastForHost(event.host) &&
+        !s._shouldThrottleSuppressed(canonical)) {
       LogBroadcaster.broadcastLog(logMessage);
+      // Only track last broadcast time for throttling; do not set state.
+      s._lastBroadcastAt[canonical] = DateTime.now();
+    }
+
+    // If a problem is currently suppressed due to downtime/ack, schedule a re-check shortly.
+    // This helps when operators delete a downtime and the end-event isn't received or is delayed.
+    if (event.state > 0 && event.service != null) {
+      final h = event.host;
+      final svc = event.service!;
+      // re-check a bit later to catch cleared downtime_depth
+      Timer(const Duration(seconds: 5), () {
+        unawaited(s._checkAndTriggerAfterDowntime(h, svc));
+      });
+      Timer(const Duration(seconds: 12), () {
+        unawaited(s._checkAndTriggerAfterDowntime(h, svc));
+      });
     }
   } else {
     s.session.log(
@@ -290,6 +306,8 @@ void handleDowntimeAdded(Icinga2EventListener s, DowntimeAddedEvent event) {
 void handleDowntimeRemoved(Icinga2EventListener s, DowntimeRemovedEvent event) {
   s.session.log('Processing downtime removed: ${event.downtime}',
       level: LogLevel.debug);
+  // When downtime ends, if the service/host is still non-OK, we should trigger an alert now.
+  unawaited(s._handleDowntimeEnded(event.downtime));
 }
 
 void handleDowntimeStarted(Icinga2EventListener s, DowntimeStartedEvent event) {
@@ -301,6 +319,9 @@ void handleDowntimeTriggered(
     Icinga2EventListener s, DowntimeTriggeredEvent event) {
   s.session.log('Processing downtime triggered: ${event.downtime}',
       level: LogLevel.debug);
+  // Some environments emit DowntimeTriggered when an active downtime entry is removed/expired.
+  // Run the same post-downtime check to be safe.
+  unawaited(s._handleDowntimeEnded(event.downtime));
 }
 
 void handleObjectCreated(Icinga2EventListener s, ObjectCreatedEvent event) {

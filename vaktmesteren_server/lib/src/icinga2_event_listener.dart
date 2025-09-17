@@ -505,6 +505,327 @@ class Icinga2EventListener {
     return true;
   }
 
+  /// Throttle suppressed log spam without mutating last broadcast state.
+  /// Returns true if we should skip a suppressed broadcast due to time threshold.
+  bool _shouldThrottleSuppressed(String key,
+      {Duration window = const Duration(seconds: 15)}) {
+    final lastAt = _lastBroadcastAt[key];
+    if (lastAt == null) return false;
+    return DateTime.now().difference(lastAt) < window;
+  }
+
+  /// Extract host/service from a downtime payload.
+  /// Supports keys like host_name/service_name or parses composite name "host!service!...".
+  (String host, String? service)? _extractHostServiceFromDowntime(
+      Map<String, dynamic> downtime) {
+    try {
+      String? host = (downtime['host_name'] ?? downtime['host'])?.toString();
+      String? service =
+          (downtime['service_name'] ?? downtime['service'])?.toString();
+      host = host?.trim();
+      service = service?.trim();
+      if ((host == null || host.isEmpty) && (downtime['name'] is String)) {
+        final name = (downtime['name'] as String);
+        final parts = name.split('!');
+        if (parts.isNotEmpty) {
+          host = parts[0];
+          if (parts.length > 1) {
+            service = parts[1];
+          }
+        }
+      }
+      if (host == null || host.isEmpty) return null;
+      if (service != null && service.isEmpty) service = null;
+      return (host, service);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Fetch current service attributes from Icinga2 for the given host/service.
+  /// Returns a map with keys: host_name, name, state, state_type, downtime_depth, acknowledgement.
+  Future<Map<String, dynamic>?> _fetchServiceAttrs(
+      String host, String service) async {
+    try {
+      if (_dio == null) return null;
+      final url =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/services';
+      final credentials =
+          base64Encode(utf8.encode('${config.username}:${config.password}'));
+      final headers = {
+        'Authorization': 'Basic $credentials',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-HTTP-Method-Override': 'GET',
+      };
+      // Use 'name' for the service attribute as returned in attrs
+      final filter = 'host.name=="$host" && name=="$service"';
+      final body = jsonEncode({
+        'filter': filter,
+        'attrs': [
+          'name',
+          'state',
+          'state_type',
+          'host_name',
+          'downtime_depth',
+          'acknowledgement'
+        ],
+      });
+      final response = await _dio!
+          .post(url, data: body, options: dio.Options(headers: headers))
+          .timeout(Duration(seconds: 20));
+      if (response.statusCode != 200) return null;
+      final data =
+          response.data is String ? jsonDecode(response.data) : response.data;
+      final results = (data['results'] as List?) ?? const [];
+      if (results.isEmpty) return null;
+      final attrs = results.first['attrs'] as Map<String, dynamic>?;
+      return attrs;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Fetch current service attrs for all services on a host.
+  Future<List<Map<String, dynamic>>> _fetchHostServicesAttrs(
+      String host) async {
+    try {
+      if (_dio == null) return const [];
+      final url =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/services';
+      final credentials =
+          base64Encode(utf8.encode('${config.username}:${config.password}'));
+      final headers = {
+        'Authorization': 'Basic $credentials',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-HTTP-Method-Override': 'GET',
+      };
+      final body = jsonEncode({
+        'filter': 'host.name=="$host"',
+        'attrs': [
+          'name',
+          'state',
+          'host_name',
+          'downtime_depth',
+          'acknowledgement'
+        ],
+      });
+      final response = await _dio!
+          .post(url, data: body, options: dio.Options(headers: headers))
+          .timeout(Duration(seconds: 20));
+      if (response.statusCode != 200) return const [];
+      final data =
+          response.data is String ? jsonDecode(response.data) : response.data;
+      final results = (data['results'] as List?) ?? const [];
+      final list = <Map<String, dynamic>>[];
+      for (final serviceData in results) {
+        final attrs = serviceData['attrs'] as Map<String, dynamic>?;
+        if (attrs != null) list.add(attrs);
+      }
+      return list;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Returns true if there is an active downtime for the given host/service.
+  /// For a service, both service-level and host-level downtimes count as active.
+  Future<bool> _hasActiveDowntime(String host, {String? service}) async {
+    try {
+      if (_dio == null) return false;
+      final url =
+          '${config.scheme}://${config.host}:${config.port}/v1/objects/downtimes';
+      final credentials =
+          base64Encode(utf8.encode('${config.username}:${config.password}'));
+      final headers = {
+        'Authorization': 'Basic $credentials',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-HTTP-Method-Override': 'GET',
+      };
+      // Filter by host to keep payload small. Match possible FQDN variants using match().
+      // Example: match("integrasjoner*", host_name)
+      final filter = 'match("$host*", host_name)';
+      final body = jsonEncode({
+        'filter': filter,
+        'attrs': [
+          'host_name',
+          'service_name',
+          'start_time',
+          'end_time',
+          'entry_time',
+          'fixed',
+          'duration'
+        ],
+      });
+      final response = await _dio!
+          .post(url, data: body, options: dio.Options(headers: headers))
+          .timeout(Duration(seconds: 20));
+      if (response.statusCode != 200) return false;
+      final data =
+          response.data is String ? jsonDecode(response.data) : response.data;
+      final results = (data['results'] as List?) ?? const [];
+      if (results.isEmpty) return false;
+      final nowEpoch = DateTime.now().millisecondsSinceEpoch / 1000.0;
+      bool activeForService = false;
+      for (final item in results) {
+        final attrs = item['attrs'] as Map<String, dynamic>?;
+        if (attrs == null) continue;
+        final startTime = (attrs['start_time'] is num)
+            ? (attrs['start_time'] as num).toDouble()
+            : (attrs['start_time'] is String)
+                ? double.tryParse(attrs['start_time'] as String)
+                : null;
+        final endTime = (attrs['end_time'] is num)
+            ? (attrs['end_time'] as num).toDouble()
+            : (attrs['end_time'] is String)
+                ? double.tryParse(attrs['end_time'] as String)
+                : null;
+        // Consider active if now is within [start, end).
+        final started = startTime == null ? true : (startTime <= nowEpoch);
+        final notEnded = endTime == null ? true : (endTime > nowEpoch);
+        final isActive = started && notEnded;
+        if (!isActive) continue;
+        final svcName = (attrs['service_name'] ?? '').toString().trim();
+        if (service == null || service.isEmpty) {
+          // Host-level query; any active downtime on host counts.
+          if (isActive) return true;
+        } else {
+          // Service-specific; host-level downtime has empty service_name.
+          if (svcName.isEmpty && isActive) {
+            return true; // host-level downtime covers service
+          }
+          if (svcName == service && isActive) activeForService = true;
+        }
+      }
+      return activeForService;
+    } catch (e) {
+      try {
+        session.log('Downtime check failed for $host/${service ?? ''}: $e',
+            level: LogLevel.debug);
+      } catch (_) {}
+      // On error, be conservative and return true only if we explicitly know;
+      // here we failed, so return false to avoid blocking alerts indefinitely.
+      return false;
+    }
+  }
+
+  /// After downtime ends, if the service is still non-OK and not acknowledged, trigger an alert.
+  Future<void> _checkAndTriggerAfterDowntime(
+      String host, String service) async {
+    try {
+      if (!_shouldBroadcastForHost(host)) return;
+      final key = _canonicalKey(host, service);
+      int? state;
+      int? stateType;
+      bool acknowledged = false;
+      int downtimeDepth = 0;
+
+      final attrs = await _fetchServiceAttrs(host, service);
+      if (attrs != null) {
+        state = (attrs['state'] as num?)?.toInt();
+        stateType = (attrs['state_type'] as num?)?.toInt();
+        acknowledged = (attrs['acknowledgement'] as bool?) ?? false;
+        downtimeDepth = (attrs['downtime_depth'] as num?)?.toInt() ?? 0;
+      } else {
+        state = _persistedStates[key]?.lastState;
+      }
+
+      if (state == null) return;
+
+      // If still in downtime according to Icinga's attrs, skip this attempt (we will retry).
+      if (downtimeDepth > 0) {
+        session.log(
+            'Post-downtime check: still in downtime for ${_hostServiceLabel(host, service)} (state=$state, stateType=${stateType ?? 'n/a'}, depth=$downtimeDepth) -> will retry if scheduled',
+            level: LogLevel.debug);
+        return;
+      }
+
+      // Double-check: ensure there is no active downtime entry for this host/service.
+      // This prevents false alerts when downtime_depth briefly reports 0 but a downtime still exists.
+      final stillHasDowntime = await _hasActiveDowntime(host, service: service);
+      if (stillHasDowntime) {
+        session.log(
+            'Post-downtime check: active downtime still present for ${_hostServiceLabel(host, service)} -> not alerting yet',
+            level: LogLevel.debug);
+        return;
+      }
+
+      if (state > 0 && !acknowledged) {
+        final label =
+            state == 2 ? 'CRITICAL' : (state == 1 ? 'WARNING' : 'STATE:$state');
+        final emoji = state == 2 ? '🚨' : '⚠️';
+        // Avoid duplicate alerts across retries by gating on state change for this key.
+        if (_shouldBroadcastForKey(key, state)) {
+          final msg = stateType == 1
+              ? '$emoji ALERT $label: ${_hostServiceLabel(host, service)}'
+              : '$emoji ALERT $label: ${_hostServiceLabel(host, service)} (post-downtime)';
+          LogBroadcaster.broadcastLog(msg);
+          // Persist state and history
+          await _persistState(key, host, service, state);
+          unawaited(_persistHistory(key, host, service, state, null));
+        } else {
+          session.log(
+              'Post-downtime check: duplicate state $state for ${_hostServiceLabel(host, service)} -> no broadcast',
+              level: LogLevel.debug);
+        }
+      } else {
+        session.log(
+            'Post-downtime check: no alert for ${_hostServiceLabel(host, service)} (state=$state, stateType=${stateType ?? 'n/a'}, ack=$acknowledged, depth=$downtimeDepth)',
+            level: LogLevel.debug);
+      }
+    } catch (e) {
+      try {
+        session.log('Post-downtime trigger failed for $host/$service: $e',
+            level: LogLevel.debug);
+      } catch (_) {}
+    }
+  }
+
+  /// Handle a downtime ending for either a service or an entire host.
+  Future<void> _handleDowntimeEnded(Map<String, dynamic> downtime) async {
+    final hs = _extractHostServiceFromDowntime(downtime);
+    if (hs == null) return;
+    final host = hs.$1;
+    final service = hs.$2;
+    if (service != null && service.isNotEmpty) {
+      await _checkAndTriggerAfterDowntime(host, service);
+      // Retry shortly after to avoid race where downtime_depth is still > 0.
+      Timer(const Duration(seconds: 3), () {
+        unawaited(_checkAndTriggerAfterDowntime(host, service));
+      });
+      Timer(const Duration(seconds: 10), () {
+        unawaited(_checkAndTriggerAfterDowntime(host, service));
+      });
+    } else {
+      // Host-level downtime ended; evaluate all services on host.
+      final services = await _fetchHostServicesAttrs(host);
+      for (final attrs in services) {
+        final svc = (attrs['name'] ?? '').toString();
+        if (svc.isEmpty) continue;
+        final dd = (attrs['downtime_depth'] as num?)?.toInt() ?? 0;
+        if (dd > 0) {
+          // Schedule retries per service to wait out Icinga lag in clearing downtime_depth
+          Timer(const Duration(seconds: 3), () {
+            unawaited(_checkAndTriggerAfterDowntime(host, svc));
+          });
+          Timer(const Duration(seconds: 10), () {
+            unawaited(_checkAndTriggerAfterDowntime(host, svc));
+          });
+        } else {
+          await _checkAndTriggerAfterDowntime(host, svc);
+          Timer(const Duration(seconds: 3), () {
+            unawaited(_checkAndTriggerAfterDowntime(host, svc));
+          });
+          Timer(const Duration(seconds: 10), () {
+            unawaited(_checkAndTriggerAfterDowntime(host, svc));
+          });
+        }
+      }
+    }
+  }
+
   /// Decide whether to broadcast a recovery (state=0) even if we didn't
   /// previously broadcast the alert state (e.g., only soft criticals).
   ///

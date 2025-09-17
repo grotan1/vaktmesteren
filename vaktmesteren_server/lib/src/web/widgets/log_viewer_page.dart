@@ -5,7 +5,7 @@ import 'package:serverpod/serverpod.dart';
 class LogViewerPage extends Widget {
   LogViewerPage() : super(name: 'log_viewer') {
     values = {
-      'title': 'Real-time Log Viewer',
+      'title': 'Vaktmesteren',
     };
   }
 }
