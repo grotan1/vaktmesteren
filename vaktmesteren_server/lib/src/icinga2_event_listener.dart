@@ -41,6 +41,9 @@ class Icinga2EventListener {
   // Recovery backfill timer: polls occasionally to synthesize a missing OK
   // recovery if the event stream was disconnected when the recovery occurred.
   Timer? _recoveryBackfillTimer;
+  // Problem state reconciliation timer: periodically checks for non-OK services
+  // that are no longer in downtime and may have been missed.
+  Timer? _problemStateReconciliationTimer;
   // Track last broadcast state per canonical key (host!service) to avoid duplicate alerts
   final Map<String, int> _lastBroadcastState = {};
   final Map<String, PersistedAlertState> _persistedStates = {};
@@ -68,7 +71,56 @@ class Icinga2EventListener {
     // ensures we don't miss a recovery if the event stream briefly disconnects.
     _startRecoveryBackfillJob();
 
+    // Start a job to reconcile problem states that might have been missed.
+    _startProblemStateReconciliationJob();
+
     // No polling started - we rely on the event stream and websocket for updates.
+  }
+
+  void _startProblemStateReconciliationJob() {
+    _problemStateReconciliationTimer?.cancel();
+    // Run every minute to check for missed problem states.
+    _problemStateReconciliationTimer =
+        Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(_runProblemStateReconciliation());
+    });
+  }
+
+  Future<void> _runProblemStateReconciliation() async {
+    try {
+      if (_dio == null) return;
+
+      // Fetch all non-OK services for the target host.
+      final services = await _fetchHostServicesAttrs('integrasjoner');
+      for (final attrs in services) {
+        final state = (attrs['state'] as num?)?.toInt() ?? 0;
+        if (state == 0) continue; // Skip OK services
+
+        final host = (attrs['host_name'] ?? '').toString();
+        final service = (attrs['name'] ?? '').toString();
+        if (service.isEmpty) continue;
+
+        // First, check if the service is currently in downtime.
+        // If it is, we don't need to do anything, as the regular
+        // post-downtime logic will handle it when the downtime ends.
+        final isInDowntime = await _hasActiveDowntime(host, service: service);
+        if (isInDowntime) {
+          continue;
+        }
+
+        // If the service is not in downtime and is in a problem state,
+        // run the check-and-trigger logic. This will handle alerting
+        // if the state is hard, not acknowledged, and the state has
+        // changed since the last broadcast.
+        await _checkAndTriggerAfterDowntime(host, service,
+            forceBroadcast: true);
+      }
+    } catch (e) {
+      try {
+        session.log('Problem state reconciliation failed: $e',
+            level: LogLevel.debug);
+      } catch (_) {}
+    }
   }
 
   Future<void> _reconcileStatesOnStartup() async {
@@ -542,7 +594,7 @@ class Icinga2EventListener {
     }
   }
 
-  /// Fetch current service attributes from Icinga2 for the given host/service.
+  /// Fetch current service attributes from Iicinga2 for the given host/service.
   /// Returns a map with keys: host_name, name, state, state_type, downtime_depth, acknowledgement.
   Future<Map<String, dynamic>?> _fetchServiceAttrs(
       String host, String service) async {
@@ -720,8 +772,8 @@ class Icinga2EventListener {
   }
 
   /// After downtime ends, if the service is still non-OK and not acknowledged, trigger an alert.
-  Future<void> _checkAndTriggerAfterDowntime(
-      String host, String service) async {
+  Future<void> _checkAndTriggerAfterDowntime(String host, String service,
+      {bool forceBroadcast = false}) async {
     try {
       if (!_shouldBroadcastForHost(host)) return;
       final key = _canonicalKey(host, service);
@@ -779,8 +831,9 @@ class Icinga2EventListener {
         final label =
             state == 2 ? 'CRITICAL' : (state == 1 ? 'WARNING' : 'STATE:$state');
         final emoji = state == 2 ? '🚨' : '⚠️';
-        // Avoid duplicate alerts across retries by gating on state change for this key.
-        if (_shouldBroadcastForKey(key, state)) {
+        // Avoid duplicate alerts across retries by gating on state change for this key,
+        // unless we are forcing a broadcast from the reconciliation job.
+        if (forceBroadcast || _shouldBroadcastForKey(key, state)) {
           final msg = stateType == 1
               ? '$emoji ALERT $label: ${_hostServiceLabel(host, service)}'
               : '$emoji ALERT $label: ${_hostServiceLabel(host, service)} (post-downtime)';
@@ -1050,6 +1103,12 @@ class Icinga2EventListener {
       _recoveryBackfillTimer?.cancel();
     } catch (_) {}
     _recoveryBackfillTimer = null;
+
+    // Stop problem state reconciliation timer as well
+    try {
+      _problemStateReconciliationTimer?.cancel();
+    } catch (_) {}
+    _problemStateReconciliationTimer = null;
 
     if (_reconnectTimer?.isActive ?? false) {
       _reconnectTimer?.cancel();
