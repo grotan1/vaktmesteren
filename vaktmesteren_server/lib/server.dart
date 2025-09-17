@@ -8,7 +8,7 @@ import 'package:vaktmesteren_server/src/web/routes/portainer_ops.dart';
 
 import 'src/generated/protocol.dart';
 import 'src/generated/endpoints.dart';
-import 'src/icinga2_event_listener.dart';
+import 'src/icinga2_alert_service.dart';
 
 // This is the starting point of your Serverpod server. In most cases, you will
 // only need to make additions to this file if you add future calls,  are
@@ -59,34 +59,45 @@ void run(List<String> args) async {
   // Start the server.
   await pod.start();
 
-  // Initialize Icinga2 event listener with proper session management
+  // Initialize simple Icinga2 alert service
+  print('DEBUG: About to initialize Icinga2AlertService');
   try {
-    // Initialize Icinga2 event listener
-    // Create a session for the event listener
-    final session = await pod.createSession();
-    session.log('Session created for Icinga2 event listener',
+    // Create a session for the alert service
+    print('DEBUG: Creating session...');
+    final session = await pod.createSession(enableLogging: false);
+    print('DEBUG: Session created');
+    session.log('Session created for Icinga2AlertService',
         level: LogLevel.info);
 
     // Load Icinga2 configuration
+    print('DEBUG: Loading Icinga2 configuration...');
     final config = await Icinga2Config.loadFromConfig(session);
-    session.log('Configuration loaded: ${config.host}:${config.port}',
+    print('DEBUG: Config loaded: ${config.host}:${config.port}');
+    session.log('Icinga2 configuration loaded: ${config.host}:${config.port}',
         level: LogLevel.info);
 
-    // Create and start the event listener
-    final eventListener = Icinga2EventListener(session, config);
-    await eventListener.start();
+    // Create and start the alert service
+    print('DEBUG: Creating alert service...');
+    final alertService = Icinga2AlertService(session, config);
+    print('DEBUG: Starting alert service...');
+    await alertService.start();
+    print('DEBUG: Alert service started successfully');
 
-    session.log('Icinga2 event listener started successfully',
+    session.log('Icinga2AlertService started successfully',
         level: LogLevel.info);
-  } catch (e) {
+  } catch (e, stackTrace) {
+    print('DEBUG: Error occurred: $e');
+    print('DEBUG: Stack trace: $stackTrace');
     // Log the error using Serverpod's logging system
     try {
-      final errorSession = await pod.createSession();
-      errorSession.log('Failed to start Icinga2 event listener: $e',
+      final errorSession = await pod.createSession(enableLogging: false);
+      errorSession.log(
+          'Failed to start Icinga2AlertService: $e\nStack trace: $stackTrace',
           level: LogLevel.error);
     } catch (logError) {
       // Fallback to stderr if session creation fails
-      stderr.writeln('Failed to start Icinga2 event listener: $e');
+      stderr.writeln('Failed to start Icinga2AlertService: $e');
+      stderr.writeln('Stack trace: $stackTrace');
       stderr.writeln('Also failed to create session for logging: $logError');
     }
   }
