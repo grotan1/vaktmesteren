@@ -574,22 +574,43 @@ class Icinga2AlertService {
   ) async {
     String? alertMessage;
 
+    session.log('State transition: $canonicalKey from $fromState to $toState',
+        level: LogLevel.info);
+    LogBroadcaster.broadcastLog(
+        '🔄 State transition: $canonicalKey ($fromState → $toState)');
+
     // Determine if we should send an alert
     if (fromState == AlertState.ok && toState == AlertState.alertingCritical) {
       // Send CRITICAL alert
       alertMessage = 'CRITICAL: Service has entered critical state';
+      session.log('Alert condition met: OK → CRITICAL', level: LogLevel.info);
     } else if (fromState == AlertState.alertingCritical &&
         toState == AlertState.ok) {
       // Send RECOVERY alert
       alertMessage = 'RECOVERY: Service has recovered';
+      session.log('Alert condition met: CRITICAL → OK', level: LogLevel.info);
     } else if (fromState == AlertState.criticalSuppressed &&
         toState == AlertState.alertingCritical) {
       // Send CRITICAL alert (came out of suppression)
       alertMessage = 'CRITICAL: Service has entered critical state';
+      session.log('Alert condition met: SUPPRESSED → CRITICAL',
+          level: LogLevel.info);
+    } else {
+      session.log(
+          'No alert condition met for transition: $fromState → $toState',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog(
+          'ℹ️ No alert needed for: $canonicalKey ($fromState → $toState)');
     }
 
     // Create alert history entry if we have a message
     if (alertMessage != null) {
+      session.log(
+          'Creating alert history entry for $canonicalKey: $alertMessage',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog(
+          '📝 Creating alert history: $canonicalKey -> $alertMessage');
+
       await _createAlertHistoryEntry(
           canonicalKey, host, service, toState.value, alertMessage, timestamp);
       session.log('Alert: $canonicalKey -> $alertMessage',
@@ -875,20 +896,36 @@ class Icinga2AlertService {
     DateTime timestamp,
   ) async {
     try {
-      await AlertHistory.db.insertRow(
-        session,
-        AlertHistory(
-          host: host,
-          service: service,
-          canonicalKey: canonicalKey,
-          state: state,
-          message: message,
-          createdAt: timestamp,
-        ),
+      session.log(
+          'Inserting alert history: host=$host, service=$service, state=$state, message=$message',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog(
+          '📝 About to insert alert history for $canonicalKey');
+
+      final alertHistory = AlertHistory(
+        host: host,
+        service: service,
+        canonicalKey: canonicalKey,
+        state: state,
+        message: message,
+        createdAt: timestamp,
       );
-    } catch (e) {
-      session.log('Error creating alert history entry: $e',
+
+      session.log('Created AlertHistory object: $alertHistory',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog(
+          '📝 AlertHistory object created, inserting...');
+
+      await AlertHistory.db.insertRow(session, alertHistory);
+
+      session.log('Alert history entry created successfully for $canonicalKey',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog('✅ Alert history saved: $canonicalKey');
+    } catch (e, stackTrace) {
+      session.log(
+          'Error creating alert history entry: $e\nStack trace: $stackTrace',
           level: LogLevel.error);
+      LogBroadcaster.broadcastLog('❌ Alert history save failed: $e');
     }
   }
 

@@ -34,7 +34,7 @@ void run(List<String> args) async {
 
   // Alert history viewer
   pod.webServer.addRoute(RouteAlertHistoryPage(), '/alerts/history');
-  pod.webServer.addRoute(RouteAlertHistoryJson(), '/alerts/history');
+  pod.webServer.addRoute(RouteAlertHistoryJson(), '/alerts/history/json');
 
   // Internal-only Portainer ops route. Registered under a path that avoids
   // Serverpod's automatic endpoint dispatch for top-level endpoint names.

@@ -135,7 +135,7 @@
 
     <script>
         (function () {
-            const apiPath = '/alerts/history';
+            const apiPath = '/alerts/history/json';
             const tableBody = document.querySelector('#historyTable tbody');
             const btnRefresh = document.getElementById('btnRefresh');
             const stateFilter = document.getElementById('stateFilter');
@@ -145,10 +145,20 @@
                 const state = stateFilter.value;
                 const limit = limitEl.value || '100';
                 const url = apiPath + '?limit=' + encodeURIComponent(limit) + (state ? '&state=' + encodeURIComponent(state) : '');
+                console.log('Loading from URL:', url);
                 try {
                     const res = await fetch(url);
+                    console.log('Response status:', res.status);
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                    }
                     const data = await res.json();
+                    console.log('Data received:', data);
                     tableBody.innerHTML = '';
+                    if (!data.rows || data.rows.length === 0) {
+                        tableBody.innerHTML = '<tr><td colspan="5">No data found</td></tr>';
+                        return;
+                    }
                     for (const r of data.rows) {
                         const tr = document.createElement('tr');
                         const when = new Date(r.createdAt).toLocaleString();
@@ -156,7 +166,8 @@
                         tableBody.appendChild(tr);
                     }
                 } catch (e) {
-                    tableBody.innerHTML = '<tr><td colspan="5">Error loading data</td></tr>';
+                    console.error('Error loading data:', e);
+                    tableBody.innerHTML = `<tr><td colspan="5">Error loading data: ${e.message}</td></tr>`;
                 }
             }
 
