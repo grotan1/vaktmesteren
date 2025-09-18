@@ -337,9 +337,15 @@ class Icinga2AlertService {
       }
 
       final state = checkResult['state'] as int?;
+      final stateType = checkResult['state_type'] as int?;
       final previousHardState = checkResult['previous_hard_state'] as int?;
 
       if (state == null) {
+        return;
+      }
+
+      // Only process hard state changes (state_type == 1)
+      if (stateType != 1) {
         return;
       }
 
