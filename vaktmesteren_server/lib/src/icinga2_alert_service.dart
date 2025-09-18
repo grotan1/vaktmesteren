@@ -609,15 +609,45 @@ class Icinga2AlertService {
 
       // Trigger SSH service restart for CRITICAL alerts
       if (toState == AlertState.alertingCritical && service != null) {
-        await _triggerServiceRestart(service, host, canonicalKey);
+        await _triggerServiceRestart(service, host, canonicalKey, event);
       }
     }
   }
 
   /// Trigger SSH service restart for critical alerts
-  Future<void> _triggerServiceRestart(
-      String icingaServiceName, String host, String canonicalKey) async {
+  Future<void> _triggerServiceRestart(String icingaServiceName, String host,
+      String canonicalKey, Map<String, dynamic> event) async {
     try {
+      // Check if auto restart is enabled for this service
+      // The event stream doesn't include service vars, so we need to fetch them via API
+      final serviceVars = await _fetchServiceVars(host, icingaServiceName);
+      final autoRestartValue = serviceVars?['auto_restart_service_linux'];
+
+      // Handle different types that Icinga2 might send
+      bool autoRestartEnabled = false;
+      if (autoRestartValue is bool) {
+        autoRestartEnabled = autoRestartValue;
+      } else if (autoRestartValue is String) {
+        autoRestartEnabled = autoRestartValue.toLowerCase() == 'true';
+      } else if (autoRestartValue is int) {
+        autoRestartEnabled = autoRestartValue != 0;
+      }
+
+      if (!autoRestartEnabled) {
+        session.log(
+            'Service $canonicalKey has auto_restart_service_linux disabled, skipping SSH restart',
+            level: LogLevel.info);
+        LogBroadcaster.broadcastLog(
+            '⏭️ SSH restart skipped for $canonicalKey (auto_restart_service_linux: ${autoRestartValue ?? 'not set'})');
+        return;
+      }
+
+      session.log(
+          'Service $canonicalKey has auto_restart_service_linux enabled, proceeding with SSH restart',
+          level: LogLevel.info);
+      LogBroadcaster.broadcastLog(
+          '✅ SSH restart enabled for $canonicalKey (auto_restart_service_linux: $autoRestartValue)');
+
       // Check if SSH restart system is available
       if (_sshConfig == null || _restartService == null || _sshClient == null) {
         session.log(
@@ -697,6 +727,55 @@ class Icinga2AlertService {
       session.log('Error in SSH service restart trigger: $e',
           level: LogLevel.error);
       LogBroadcaster.broadcastLog('❌ SSH restart system error: $e');
+    }
+  }
+
+  /// Fetch service variables from Icinga2 API
+  Future<Map<String, dynamic>?> _fetchServiceVars(
+      String host, String service) async {
+    try {
+      // Use Dio to make the API request
+      final response = await _dio.get(
+        '/v1/objects/services',
+        queryParameters: {'filter': 'service.__name==\"$host!$service\"'},
+        options: Options(
+          headers: {
+            'Accept': 'application/json',
+            'Authorization':
+                'Basic ${base64Encode(utf8.encode('${config.username}:${config.password}'))}',
+          },
+        ),
+      );
+
+      if (response.statusCode == 200) {
+        final data = response.data as Map<String, dynamic>;
+        final results = data['results'] as List<dynamic>?;
+
+        if (results != null && results.isNotEmpty) {
+          final serviceObject = results.first as Map<String, dynamic>;
+          final attrs = serviceObject['attrs'] as Map<String, dynamic>?;
+          final vars = attrs?['vars'] as Map<String, dynamic>?;
+
+          session.log(
+              'Successfully fetched service vars: ${vars?.keys.toList()}',
+              level: LogLevel.info);
+          return vars;
+        } else {
+          session.log('No service found for $host!$service',
+              level: LogLevel.warning);
+          return null;
+        }
+      } else {
+        session.log('Failed to fetch service vars: HTTP ${response.statusCode}',
+            level: LogLevel.error);
+        LogBroadcaster.broadcastLog(
+            '❌ Failed to fetch service vars: HTTP ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      session.log('Error fetching service vars: $e', level: LogLevel.error);
+      LogBroadcaster.broadcastLog('❌ Error fetching service vars: $e');
+      return null;
     }
   }
 
