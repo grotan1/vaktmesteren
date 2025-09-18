@@ -21,14 +21,12 @@ class RouteLogViewer extends WidgetRoute {
         orderBy: (t) => t.createdAt,
         orderDescending: true,
       );
-      // Filter server-side so only entries originating from the
-      // `integrasjoner` host are shown in the UI. This prevents legacy
-      // persisted rows from other hosts (e.g. pve3.*) appearing in the
-      // alert history view.
+      // Filter server-side to show entries from grsoft.no domain hosts.
+      // This includes hosts like ghrunner.grsoft.no, pve1.grsoft.no, etc.
       final filtered = rows.where((r) {
         try {
-          final baseHost = r.host.split('.').first.toLowerCase().trim();
-          return baseHost == 'integrasjoner';
+          final host = r.host.toLowerCase().trim();
+          return host.endsWith('.grsoft.no');
         } catch (_) {
           return false;
         }
@@ -231,8 +229,8 @@ class RouteLogPoll extends Route {
         );
         final filtered = rows.where((r) {
           try {
-            final baseHost = r.host.split('.').first.toLowerCase().trim();
-            return baseHost == 'integrasjoner';
+            final host = r.host.toLowerCase().trim();
+            return host.endsWith('.grsoft.no');
           } catch (_) {
             return false;
           }
