@@ -60,34 +60,42 @@ void run(List<String> args) async {
   await pod.start();
 
   // Initialize simple Icinga2 alert service
-  print('DEBUG: About to initialize Icinga2AlertService');
+  // Create a session for logging
+  final logSession = await pod.createSession(enableLogging: false);
+
+  logSession.log('About to initialize Icinga2AlertService',
+      level: LogLevel.info);
   try {
     // Create a session for the alert service
-    print('DEBUG: Creating session...');
+    logSession.log('Creating session for Icinga2AlertService...',
+        level: LogLevel.debug);
     final session = await pod.createSession(enableLogging: false);
-    print('DEBUG: Session created');
+    logSession.log('Session created successfully', level: LogLevel.debug);
     session.log('Session created for Icinga2AlertService',
         level: LogLevel.info);
 
     // Load Icinga2 configuration
-    print('DEBUG: Loading Icinga2 configuration...');
+    logSession.log('Loading Icinga2 configuration...', level: LogLevel.debug);
     final config = await Icinga2Config.loadFromConfig(session);
-    print('DEBUG: Config loaded: ${config.host}:${config.port}');
+    logSession.log('Config loaded: ${config.host}:${config.port}',
+        level: LogLevel.info);
     session.log('Icinga2 configuration loaded: ${config.host}:${config.port}',
         level: LogLevel.info);
 
     // Create and start the alert service
-    print('DEBUG: Creating alert service...');
+    logSession.log('Creating alert service...', level: LogLevel.debug);
     final alertService = Icinga2AlertService(session, config);
-    print('DEBUG: Starting alert service...');
+    logSession.log('Starting alert service...', level: LogLevel.debug);
     await alertService.start();
-    print('DEBUG: Alert service started successfully');
+    logSession.log('Alert service started successfully', level: LogLevel.info);
 
     session.log('Icinga2AlertService started successfully',
         level: LogLevel.info);
   } catch (e, stackTrace) {
-    print('DEBUG: Error occurred: $e');
-    print('DEBUG: Stack trace: $stackTrace');
+    logSession.log(
+        'Error occurred during Icinga2AlertService initialization: $e',
+        level: LogLevel.error);
+    logSession.log('Stack trace: $stackTrace', level: LogLevel.error);
     // Log the error using Serverpod's logging system
     try {
       final errorSession = await pod.createSession(enableLogging: false);

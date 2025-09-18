@@ -130,9 +130,9 @@ class Icinga2AlertService {
 
   /// Initialize SSH restart functionality
   Future<void> _initializeSshRestart() async {
-    print('DEBUG: Inside _initializeSshRestart method');
+    session.log('Inside _initializeSshRestart method', level: LogLevel.debug);
     try {
-      print('DEBUG: About to log SSH initialization...');
+      session.log('About to log SSH initialization...', level: LogLevel.debug);
       session.log('Initializing SSH restart functionality...',
           level: LogLevel.info);
 
@@ -231,11 +231,12 @@ class Icinga2AlertService {
 
     // Initialize SSH restart functionality
     try {
-      print('DEBUG: About to initialize SSH restart system...');
+      session.log('About to initialize SSH restart system...',
+          level: LogLevel.debug);
       await _initializeSshRestart();
-      print('DEBUG: SSH restart system initialization completed');
+      session.log('SSH restart system initialization completed',
+          level: LogLevel.info);
     } catch (e) {
-      print('DEBUG: Error initializing SSH restart system: $e');
       session.log('Error initializing SSH restart system: $e',
           level: LogLevel.error);
     }

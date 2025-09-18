@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print
+
 import 'package:yaml/yaml.dart';
 import 'dart:io';
 

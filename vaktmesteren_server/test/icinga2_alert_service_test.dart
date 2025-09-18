@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print
+
 import 'package:test/test.dart';
 import 'package:vaktmesteren_server/src/icinga2_alert_service.dart';
 

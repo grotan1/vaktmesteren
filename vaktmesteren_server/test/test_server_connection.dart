@@ -1,6 +1,6 @@
 #!/usr/bin/env dart
+// ignore_for_file: avoid_print
 
-import 'dart:convert';
 import 'dart:io';
 
 /// Simple script to send a test HTTP request to trigger a manual test

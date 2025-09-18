@@ -1,4 +1,4 @@
-import 'package:vaktmesteren_server/src/ops/config/ssh_restart_config_loader.dart';
+// ignore_for_file: avoid_print
 
 /// Simple test script for SSH restart configuration
 void main() async {
@@ -9,33 +9,6 @@ void main() async {
   try {
     // Test configuration loading without session
     print('📝 Loading SSH restart configuration...');
-
-    // Read the config file directly to test parsing
-    final configContent = '''
-enabled: true
-logOnly: true
-
-connections:
-  ghrunner-server:
-    host: "ghrunner.grsoft.no"
-    port: 22
-    username: "monitoring"
-    privateKeyPath: "/etc/ssh/monitoring_key"
-    timeoutSeconds: 30
-
-rules:
-  - icingaServicePattern: "CheckSystemd-Linux"
-    systemdServiceName: "github-runner"
-    sshConnectionName: "ghrunner-server"
-    enabled: true
-    maxRestartsPerHour: 3
-    cooldownMinutes: 5
-    preChecks:
-      - "sudo systemctl is-failed github-runner || true"
-    postChecks:
-      - "sudo systemctl is-active github-runner"
-      - "sleep 5 && sudo systemctl status github-runner --no-pager"
-''';
 
     // Test parsing the YAML content
     print('✅ Configuration structure looks valid');
