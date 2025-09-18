@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:serverpod/serverpod.dart';
-import 'package:vaktmesteren_server/src/ops/portainer_config_loader.dart';
+import 'package:vaktmesteren_server/src/ops/config/portainer_config_loader.dart';
 
 class PortainerOpsEndpoint extends Endpoint {
   // No internal token used — endpoint intentionally open.

@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:serverpod/serverpod.dart';
-import 'package:vaktmesteren_server/src/ops/portainer_config_loader.dart';
+import 'package:vaktmesteren_server/src/ops/config/portainer_config_loader.dart';
 
 /// Internal-only route to perform Portainer ops. This route is intentionally
 /// restricted to internal/private networks (loopback and RFC1918 ranges).

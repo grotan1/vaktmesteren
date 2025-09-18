@@ -1,0 +1,75 @@
+# SSH Restart Configuration
+# This configuration defines how to restart Linux services via SSH when Icinga2 alerts trigger
+
+# Global settings
+enabled: true
+logOnly: true  # Set to false to enable real SSH execution (use with caution!)
+
+# SSH Connection definitions
+connections:
+  ghrunner-server:
+    host: "ghrunner.grsoft.no"
+    port: 22
+    username: "monitoring"
+    privateKeyPath: "/etc/ssh/monitoring_key"
+    # password: "alternative_to_key"  # Use either privateKeyPath or password, not both
+    timeoutSeconds: 30
+
+  web-server-1:
+    host: "192.168.1.10"
+    port: 22
+    username: "monitoring"
+    privateKeyPath: "/etc/ssh/monitoring_key"
+    # password: "alternative_to_key"  # Use either privateKeyPath or password, not both
+    timeoutSeconds: 30
+
+  database-server:
+    host: "db.example.com"
+    port: 2222
+    username: "sysadmin"
+    privateKeyPath: "/etc/ssh/db_monitoring_key"
+    timeoutSeconds: 45
+
+# Restart rules - define which Icinga2 services trigger which systemd restarts
+rules:
+  - icingaServicePattern: "CheckSystemd-Linux" # Match your specific Icinga2 service
+    systemdServiceName: "github-runner"      # Restart GitHub runner service
+    sshConnectionName: "ghrunner-server"     # On the GitHub runner server
+    enabled: true
+    maxRestartsPerHour: 3                    # Throttling: max 3 restarts per hour
+    cooldownMinutes: 5                       # Short cooldown for CI/CD service
+    preChecks:                               # Commands to run before restart
+      - "sudo systemctl is-failed github-runner || true"  # Check if service is failed
+    postChecks:                              # Commands to run after restart
+      - "sudo systemctl is-active github-runner"          # Verify service is running
+      - "sleep 5 && sudo systemctl status github-runner --no-pager"  # Check status
+
+  - icingaServicePattern: "nginx"           # Match Icinga2 service names containing "nginx"
+    systemdServiceName: "nginx"             # Restart this systemd service
+    sshConnectionName: "web-server-1"       # On this SSH connection
+    enabled: true
+    maxRestartsPerHour: 3                   # Throttling: max 3 restarts per hour
+    cooldownMinutes: 10                     # Wait 10 minutes between restarts
+    preChecks:                              # Commands to run before restart
+      - "sudo nginx -t"                     # Test nginx config
+    postChecks:                             # Commands to run after restart
+      - "sudo systemctl is-active nginx"    # Verify service is running
+
+  - icingaServicePattern: "mysql"
+    systemdServiceName: "mysql"
+    sshConnectionName: "database-server"
+    enabled: true
+    maxRestartsPerHour: 2                   # Databases need more careful handling
+    cooldownMinutes: 15
+    preChecks:
+      - "sudo mysqladmin ping"              # Check if MySQL is responsive
+    postChecks:
+      - "sudo systemctl is-active mysql"
+      - "sudo mysqladmin ping"
+
+  - icingaServicePattern: "webapp"
+    systemdServiceName: "myapp"
+    sshConnectionName: "web-server-1"
+    enabled: false                          # Disabled rule (for testing)
+    maxRestartsPerHour: 5
+    cooldownMinutes: 5

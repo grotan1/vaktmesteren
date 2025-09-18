@@ -7,6 +7,10 @@ import 'package:serverpod/serverpod.dart';
 import 'package:yaml/yaml.dart';
 import 'package:vaktmesteren_server/src/generated/protocol.dart';
 import 'package:vaktmesteren_server/src/web/routes/log_viewer.dart';
+import 'package:vaktmesteren_server/src/ops/clients/ssh_client.dart';
+import 'package:vaktmesteren_server/src/ops/services/linux_service_restart_service.dart';
+import 'package:vaktmesteren_server/src/ops/config/ssh_restart_config_loader.dart';
+import 'package:vaktmesteren_server/src/ops/models/restart_rule.dart';
 
 /// Simple alert states for tracking
 enum AlertState {
@@ -80,6 +84,11 @@ class Icinga2AlertService {
   final Icinga2Config config;
   late final Dio _dio;
 
+  // SSH restart components
+  SshClient? _sshClient;
+  LinuxServiceRestartService? _restartService;
+  SshRestartConfig? _sshConfig;
+
   StreamSubscription<String>? _eventSubscription;
   bool _isRunning = false;
   Timer? _retentionTimer;
@@ -90,6 +99,7 @@ class Icinga2AlertService {
 
   Icinga2AlertService(this.session, this.config) {
     _setupHttpClient();
+    // Note: SSH initialization will happen in start() method
   }
 
   void _setupHttpClient() {
@@ -114,6 +124,52 @@ class Icinga2AlertService {
     }
   }
 
+  /// Initialize SSH restart functionality
+  Future<void> _initializeSshRestart() async {
+    try {
+      session.log('Initializing SSH restart functionality...',
+          level: LogLevel.info);
+
+      // Broadcast initialization start to WebSocket clients
+      LogBroadcaster.broadcastLog('🔧 Initializing SSH restart system...');
+
+      // Load SSH restart configuration
+      session.log('Loading SSH restart configuration...', level: LogLevel.info);
+      _sshConfig = await SshRestartConfigLoader.loadConfig(session);
+      
+      session.log('SSH config loaded: enabled=${_sshConfig?.enabled}, logOnly=${_sshConfig?.logOnly}', level: LogLevel.info);
+
+      if (_sshConfig?.enabled == true) {
+        // Initialize SSH client (in log-only mode by default)
+        _sshClient = SshClient(session, logOnly: _sshConfig?.logOnly ?? true);
+
+        // Initialize restart service
+        _restartService = LinuxServiceRestartService(session, _sshClient!);
+
+        session.log(
+          'SSH restart system initialized: ${_sshConfig!.connections.length} connections, '
+          '${_sshConfig!.rules.length} rules, logOnly=${_sshConfig!.logOnly}',
+          level: LogLevel.info,
+        );
+
+        // Broadcast initialization to WebSocket clients
+        LogBroadcaster.broadcastLog(
+            '🔧 SSH restart system initialized (${_sshConfig!.logOnly ? 'LOG-ONLY' : 'LIVE'} mode)');
+      } else {
+        session.log('SSH restart system is disabled in configuration',
+            level: LogLevel.info);
+      }
+    } catch (e) {
+      session.log('Failed to initialize SSH restart system: $e',
+          level: LogLevel.error);
+
+      // Continue without SSH restart functionality
+      _sshConfig = null;
+      _sshClient = null;
+      _restartService = null;
+    }
+  }
+
   /// Start the alert service
   Future<void> start() async {
     if (_isRunning) {
@@ -124,6 +180,13 @@ class Icinga2AlertService {
 
     _isRunning = true;
     session.log('Starting Icinga2AlertService...', level: LogLevel.info);
+
+    // Initialize SSH restart functionality
+    try {
+      await _initializeSshRestart();
+    } catch (e) {
+      session.log('Error initializing SSH restart system: $e', level: LogLevel.error);
+    }
 
     // Broadcast service start to WebSocket clients
     LogBroadcaster.broadcastLog(
@@ -476,6 +539,97 @@ class Icinga2AlertService {
         // Critical alert - use warning
         LogBroadcaster.broadcastLog('🚨 $alertMessage for $canonicalKey');
       }
+
+      // Trigger SSH service restart for CRITICAL alerts
+      if (toState == AlertState.alertingCritical && service != null) {
+        await _triggerServiceRestart(service, host, canonicalKey);
+      }
+    }
+  }
+
+  /// Trigger SSH service restart for critical alerts
+  Future<void> _triggerServiceRestart(
+      String icingaServiceName, String host, String canonicalKey) async {
+    try {
+      // Check if SSH restart system is available
+      if (_sshConfig == null || _restartService == null || _sshClient == null) {
+        session.log(
+            'SSH restart system not available, skipping restart for $canonicalKey',
+            level: LogLevel.info);
+        return;
+      }
+
+      if (!_sshConfig!.enabled) {
+        session.log(
+            'SSH restart system is disabled, skipping restart for $canonicalKey',
+            level: LogLevel.info);
+        return;
+      }
+
+      session.log('Evaluating SSH restart rules for: $icingaServiceName',
+          level: LogLevel.info);
+
+      // Find matching restart rules
+      final matchingRules = _sshConfig!.findMatchingRules(icingaServiceName);
+
+      if (matchingRules.isEmpty) {
+        session.log('No SSH restart rules match service: $icingaServiceName',
+            level: LogLevel.info);
+        LogBroadcaster.broadcastLog(
+            '🔍 No restart rules found for service: $icingaServiceName');
+        return;
+      }
+
+      session.log(
+          'Found ${matchingRules.length} matching restart rules for: $icingaServiceName',
+          level: LogLevel.info);
+
+      // Execute each matching rule
+      for (final rule in matchingRules) {
+        try {
+          session.log(
+              'Processing restart rule: ${rule.icingaServicePattern} -> ${rule.systemdServiceName}',
+              level: LogLevel.info);
+
+          // Get SSH connection for this rule
+          final connection = _sshConfig!.getConnection(rule.sshConnectionName);
+          if (connection == null) {
+            session.log(
+                'SSH connection "${rule.sshConnectionName}" not found for rule',
+                level: LogLevel.error);
+            LogBroadcaster.broadcastLog(
+                '❌ SSH connection "${rule.sshConnectionName}" not configured');
+            continue;
+          }
+
+          // Log the restart attempt
+          LogBroadcaster.broadcastLog(
+              '🔄 Triggering restart: ${rule.systemdServiceName} on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
+
+          // Execute the restart (or simulate it)
+          final result = await _restartService!
+              .restartService(rule, connection, icingaServiceName);
+
+          if (result.success) {
+            session.log(
+                'Service restart ${result.wasSimulated ? 'simulation ' : ''}successful: ${result.message}',
+                level: LogLevel.info);
+          } else {
+            session.log(
+                'Service restart ${result.wasSimulated ? 'simulation ' : ''}failed: ${result.message}',
+                level: LogLevel.warning);
+          }
+        } catch (e) {
+          session.log(
+              'Error executing restart rule for ${rule.systemdServiceName}: $e',
+              level: LogLevel.error);
+          LogBroadcaster.broadcastLog('❌ Restart rule execution failed: $e');
+        }
+      }
+    } catch (e) {
+      session.log('Error in SSH service restart trigger: $e',
+          level: LogLevel.error);
+      LogBroadcaster.broadcastLog('❌ SSH restart system error: $e');
     }
   }
 

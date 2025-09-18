@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:vaktmesteren_server/src/ops/portainer_config_loader.dart';
+import 'package:vaktmesteren_server/src/ops/config/portainer_config_loader.dart';
 
 void usage() {
   print('''

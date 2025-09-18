@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:yaml/yaml.dart';
-import 'portainer_client.dart';
+import '../clients/portainer_client.dart';
 
 class PortainerConfig {
   final String baseUrl;
