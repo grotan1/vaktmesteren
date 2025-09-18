@@ -17,7 +17,8 @@ class RouteAlertHistoryJson extends Route {
 
       final threeDaysAgo = DateTime.now().toUtc().subtract(Duration(days: 3));
 
-      session.log('Alert history API called: limit=$limit, offset=$offset, stateFilter=$stateFilter', 
+      session.log(
+          'Alert history API called: limit=$limit, offset=$offset, stateFilter=$stateFilter',
           level: LogLevel.info);
 
       final rows = await AlertHistory.db.find(
@@ -31,7 +32,8 @@ class RouteAlertHistoryJson extends Route {
         orderDescending: true,
       );
 
-      session.log('Found ${rows.length} alert history rows', level: LogLevel.info);
+      session.log('Found ${rows.length} alert history rows',
+          level: LogLevel.info);
 
       final payload = {
         'rows': rows.map((r) => r.toJson()).toList(),
