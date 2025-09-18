@@ -608,8 +608,6 @@ class Icinga2AlertService {
       session.log(
           'Creating alert history entry for $canonicalKey: $alertMessage',
           level: LogLevel.info);
-      LogBroadcaster.broadcastLog(
-          '📝 Creating alert history: $canonicalKey -> $alertMessage');
 
       await _createAlertHistoryEntry(
           canonicalKey, host, service, toState.value, alertMessage, timestamp);
@@ -899,8 +897,6 @@ class Icinga2AlertService {
       session.log(
           'Inserting alert history: host=$host, service=$service, state=$state, message=$message',
           level: LogLevel.info);
-      LogBroadcaster.broadcastLog(
-          '📝 About to insert alert history for $canonicalKey');
 
       final alertHistory = AlertHistory(
         host: host,
@@ -913,8 +909,6 @@ class Icinga2AlertService {
 
       session.log('Created AlertHistory object: $alertHistory',
           level: LogLevel.info);
-      LogBroadcaster.broadcastLog(
-          '📝 AlertHistory object created, inserting...');
 
       await AlertHistory.db.insertRow(session, alertHistory);
 
