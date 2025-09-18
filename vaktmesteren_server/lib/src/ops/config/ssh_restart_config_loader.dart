@@ -15,6 +15,7 @@ class SshRestartConfigLoader {
           level: LogLevel.info);
 
       final configFile = File(configPath);
+
       if (!await configFile.exists()) {
         session.log('SSH restart config file not found: $configPath',
             level: LogLevel.warning);
@@ -34,7 +35,7 @@ class SshRestartConfigLoader {
       session.log('SSH restart config loaded successfully',
           level: LogLevel.info);
 
-      return SshRestartConfig.fromMap(yamlMap.cast<String, dynamic>());
+      return SshRestartConfig.fromMap(Map<String, dynamic>.from(yamlMap));
     } catch (e, stackTrace) {
       session.log(
         'Failed to load SSH restart config: $e\nStack trace: $stackTrace',

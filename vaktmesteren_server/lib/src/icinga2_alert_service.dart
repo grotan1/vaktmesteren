@@ -11,6 +11,7 @@ import 'package:vaktmesteren_server/src/ops/clients/ssh_client.dart';
 import 'package:vaktmesteren_server/src/ops/services/linux_service_restart_service.dart';
 import 'package:vaktmesteren_server/src/ops/config/ssh_restart_config_loader.dart';
 import 'package:vaktmesteren_server/src/ops/models/restart_rule.dart';
+import 'package:vaktmesteren_server/src/ops/services/teams_notification_service.dart';
 
 /// Simple alert states for tracking
 enum AlertState {
@@ -89,6 +90,9 @@ class Icinga2AlertService {
   LinuxServiceRestartService? _restartService;
   SshRestartConfig? _sshConfig;
 
+  // Teams notification components
+  TeamsNotificationService? _teamsService;
+
   StreamSubscription<String>? _eventSubscription;
   bool _isRunning = false;
   Timer? _retentionTimer;
@@ -126,7 +130,9 @@ class Icinga2AlertService {
 
   /// Initialize SSH restart functionality
   Future<void> _initializeSshRestart() async {
+    print('DEBUG: Inside _initializeSshRestart method');
     try {
+      print('DEBUG: About to log SSH initialization...');
       session.log('Initializing SSH restart functionality...',
           level: LogLevel.info);
 
@@ -136,9 +142,10 @@ class Icinga2AlertService {
       // Load SSH restart configuration
       session.log('Loading SSH restart configuration...', level: LogLevel.info);
       _sshConfig = await SshRestartConfigLoader.loadConfig(session);
-      
-      session.log('SSH config loaded: enabled=${_sshConfig?.enabled}, logOnly=${_sshConfig?.logOnly}', level: LogLevel.info);
 
+      session.log(
+          'SSH config loaded: enabled=${_sshConfig?.enabled}, logOnly=${_sshConfig?.logOnly}',
+          level: LogLevel.info);
       if (_sshConfig?.enabled == true) {
         // Initialize SSH client (in log-only mode by default)
         _sshClient = SshClient(session, logOnly: _sshConfig?.logOnly ?? true);
@@ -170,6 +177,47 @@ class Icinga2AlertService {
     }
   }
 
+  /// Initialize Teams notification functionality
+  Future<void> _initializeTeamsNotifications() async {
+    try {
+      session.log('Loading Teams notification configuration...',
+          level: LogLevel.info);
+
+      // Broadcast initialization start to WebSocket clients
+      LogBroadcaster.broadcastLog(
+          '📨 Initializing Teams notification system...');
+
+      // Initialize Teams notification service
+      _teamsService = TeamsNotificationService(session);
+      await _teamsService!.initialize();
+
+      final status = _teamsService!.getStatus();
+
+      if (status['enabled'] == true) {
+        session.log(
+          'Teams notification system initialized: ${status['activeWebhookCount']} webhooks, '
+          '${status['activeRuleCount']} rules, logOnly=${status['logOnly']}',
+          level: LogLevel.info,
+        );
+
+        // Broadcast initialization to WebSocket clients
+        LogBroadcaster.broadcastLog(
+            '📨 Teams notifications initialized (${status['logOnly'] ? 'LOG-ONLY' : 'LIVE'} mode)');
+      } else {
+        session.log('Teams notification system is disabled in configuration',
+            level: LogLevel.info);
+        LogBroadcaster.broadcastLog('📨 Teams notifications disabled');
+      }
+    } catch (e) {
+      session.log('Failed to initialize Teams notification system: $e',
+          level: LogLevel.error);
+
+      // Continue without Teams notifications
+      _teamsService = null;
+      LogBroadcaster.broadcastLog('❌ Teams notification initialization failed');
+    }
+  }
+
   /// Start the alert service
   Future<void> start() async {
     if (_isRunning) {
@@ -183,9 +231,25 @@ class Icinga2AlertService {
 
     // Initialize SSH restart functionality
     try {
+      print('DEBUG: About to initialize SSH restart system...');
       await _initializeSshRestart();
+      print('DEBUG: SSH restart system initialization completed');
     } catch (e) {
-      session.log('Error initializing SSH restart system: $e', level: LogLevel.error);
+      print('DEBUG: Error initializing SSH restart system: $e');
+      session.log('Error initializing SSH restart system: $e',
+          level: LogLevel.error);
+    }
+
+    // Initialize Teams notifications
+    try {
+      session.log('Initializing Teams notification system...',
+          level: LogLevel.info);
+      await _initializeTeamsNotifications();
+      session.log('Teams notification system initialization completed',
+          level: LogLevel.info);
+    } catch (e) {
+      session.log('Error initializing Teams notification system: $e',
+          level: LogLevel.error);
     }
 
     // Broadcast service start to WebSocket clients
@@ -540,6 +604,9 @@ class Icinga2AlertService {
         LogBroadcaster.broadcastLog('🚨 $alertMessage for $canonicalKey');
       }
 
+      // Send Teams notifications for alerts
+      await _sendTeamsNotification(host, service, toState, alertMessage);
+
       // Trigger SSH service restart for CRITICAL alerts
       if (toState == AlertState.alertingCritical && service != null) {
         await _triggerServiceRestart(service, host, canonicalKey);
@@ -630,6 +697,50 @@ class Icinga2AlertService {
       session.log('Error in SSH service restart trigger: $e',
           level: LogLevel.error);
       LogBroadcaster.broadcastLog('❌ SSH restart system error: $e');
+    }
+  }
+
+  /// Send Teams notification for alerts
+  Future<void> _sendTeamsNotification(String host, String? service,
+      AlertState alertState, String message) async {
+    try {
+      // Check if Teams notification system is available
+      if (_teamsService == null) {
+        session.log(
+            'Teams notification system not available, skipping notification',
+            level: LogLevel.debug);
+        return;
+      }
+
+      // Convert alert state to severity
+      String severity;
+      switch (alertState) {
+        case AlertState.ok:
+          severity = 'RECOVERY';
+          break;
+        case AlertState.alertingCritical:
+          severity = 'CRITICAL';
+          break;
+        case AlertState.criticalSuppressed:
+          severity = 'WARNING'; // Suppressed alerts as warnings
+          break;
+      }
+
+      // Send Teams notification
+      await _teamsService!.processAlert(
+        severity: severity,
+        host: host,
+        service: service,
+        message: message,
+        metadata: {
+          'timestamp': DateTime.now().toIso8601String(),
+          'alertState': alertState.value,
+        },
+      );
+    } catch (e) {
+      session.log('Error sending Teams notification: $e',
+          level: LogLevel.error);
+      LogBroadcaster.broadcastLog('❌ Teams notification error: $e');
     }
   }
 

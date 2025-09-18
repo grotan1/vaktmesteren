@@ -101,26 +101,33 @@ class SshRestartConfig {
   });
 
   factory SshRestartConfig.fromMap(Map<String, dynamic> map) {
-    final connectionsMap = map['connections'] as Map<String, dynamic>? ?? {};
+    // Handle YamlMap by converting to regular Map
+    final connectionsData = map['connections'];
+    final connectionsMap = connectionsData != null
+        ? Map<String, dynamic>.from(connectionsData as Map)
+        : <String, dynamic>{};
     final connections = <String, SshConnection>{};
 
     for (final entry in connectionsMap.entries) {
       connections[entry.key] = SshConnection.fromMap(
         entry.key,
-        entry.value as Map<String, dynamic>,
+        Map<String, dynamic>.from(entry.value as Map),
       );
     }
 
     final rulesData = map['rules'] as List<dynamic>? ?? [];
     final rules = rulesData
-        .map((e) => RestartRule.fromMap(e as Map<String, dynamic>))
+        .map((e) => RestartRule.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
+
+    final enabled = map['enabled'] as bool? ?? true;
+    final logOnly = map['logOnly'] as bool? ?? true;
 
     return SshRestartConfig(
       connections: connections,
       rules: rules,
-      enabled: map['enabled'] as bool? ?? true,
-      logOnly: map['logOnly'] as bool? ?? true,
+      enabled: enabled,
+      logOnly: logOnly,
     );
   }
 
