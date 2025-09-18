@@ -215,6 +215,6 @@ class TeamsConfigLoader {
         config.webhooks.values.where((w) => w.enabled).length;
     final activeRules = config.notificationRules.where((r) => r.enabled).length;
 
-    return 'Teams notifications: ENABLED (${activeWebhooks} webhooks, ${activeRules} rules, logOnly=${config.logOnly})';
+    return 'Teams notifications: ENABLED ($activeWebhooks webhooks, $activeRules rules, logOnly=${config.logOnly})';
   }
 }

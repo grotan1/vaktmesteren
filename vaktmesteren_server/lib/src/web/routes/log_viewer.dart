@@ -399,7 +399,7 @@ class RouteLogWebSocket extends Route {
       // all incoming messages as no-ops but may extend this in future.
       try {
         // ignore: cancel_subscriptions
-        final _incoming = socket.listen(
+        final incomingListener = socket.listen(
           (data) {
             // If client sends a JSON keepalive, we may echo back a pong to
             // update its timestamp. For now, just ignore.
@@ -415,7 +415,7 @@ class RouteLogWebSocket extends Route {
         // ignore: unawaited_futures
         socket.done.whenComplete(() {
           try {
-            _incoming.cancel();
+            incomingListener.cancel();
           } catch (_) {}
         });
       } catch (_) {}

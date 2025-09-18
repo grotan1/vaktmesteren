@@ -156,7 +156,7 @@ class TeamsClient {
         return false;
       }
     } finally {
-      response?.detachSocket();
+      await response?.detachSocket();
     }
   }
 
