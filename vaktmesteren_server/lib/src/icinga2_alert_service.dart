@@ -6,6 +6,7 @@ import 'package:dio/io.dart';
 import 'package:serverpod/serverpod.dart';
 import 'package:yaml/yaml.dart';
 import 'package:vaktmesteren_server/src/generated/protocol.dart';
+import 'package:vaktmesteren_server/src/web/routes/log_viewer.dart';
 
 /// Simple alert states for tracking
 enum AlertState {
@@ -115,41 +116,36 @@ class Icinga2AlertService {
 
   /// Start the alert service
   Future<void> start() async {
-    print('DEBUG: start() method called');
     if (_isRunning) {
-      print('DEBUG: Service already running, exiting');
       session.log('Icinga2AlertService is already running',
           level: LogLevel.warning);
       return;
     }
 
     _isRunning = true;
-    print('DEBUG: Set _isRunning = true');
     session.log('Starting Icinga2AlertService...', level: LogLevel.info);
 
+    // Broadcast service start to WebSocket clients
+    LogBroadcaster.broadcastLog(
+        '🟢 Icinga2AlertService started - monitoring for alerts');
+
     // Start retention cleanup timer (run daily)
-    print('DEBUG: Starting retention cleanup');
     session.log('Starting retention cleanup...', level: LogLevel.info);
     _startRetentionCleanup();
 
     // Check initial service states
-    print('DEBUG: Checking initial service states');
     try {
       await _checkInitialServiceStates();
-      print('DEBUG: Initial state check completed');
     } catch (e) {
-      print('DEBUG: Error in initial state check: $e');
+      session.log('Error in initial state check: $e', level: LogLevel.error);
     }
 
     // Start event stream
-    print('DEBUG: About to connect to event stream');
     session.log('About to connect to event stream...', level: LogLevel.info);
     try {
       await _connectEventStream();
-      print('DEBUG: Event stream connection completed');
       session.log('Event stream connection completed', level: LogLevel.info);
     } catch (e, stackTrace) {
-      print('DEBUG: Error in event stream: $e');
       session.log(
           'Error connecting to event stream: $e\nStack trace: $stackTrace',
           level: LogLevel.error);
@@ -173,17 +169,11 @@ class Icinga2AlertService {
 
   /// Connect to Icinga2 event stream
   Future<void> _connectEventStream() async {
-    print('DEBUG: _connectEventStream() called, _isRunning=$_isRunning');
-    session.log('DEBUG: _connectEventStream() called, _isRunning=$_isRunning',
-        level: LogLevel.info);
-
     if (!_isRunning) {
-      print('DEBUG: Not running, returning early');
       return;
     }
 
     try {
-      print('DEBUG: About to connect to Icinga2 event stream');
       session.log('Connecting to Icinga2 event stream...',
           level: LogLevel.info);
 
@@ -203,8 +193,6 @@ class Icinga2AlertService {
         ),
       );
 
-      print('DEBUG: HTTP response status: ${response.statusCode}');
-
       if (response.statusCode != 200) {
         throw Exception(
             'Failed to connect to event stream: ${response.statusCode}');
@@ -212,12 +200,14 @@ class Icinga2AlertService {
 
       _reconnectAttempts =
           0; // Reset reconnect counter on successful connection
-      print('DEBUG: Successfully connected to Icinga2 event stream');
       session.log('Successfully connected to Icinga2 event stream',
           level: LogLevel.info);
 
+      // Broadcast successful connection to WebSocket clients
+      LogBroadcaster.broadcastLog(
+          '✅ Connected to Icinga2 event stream - ready for alerts');
+
       // Listen to the stream
-      print('DEBUG: Setting up stream subscription');
       _eventSubscription = response.data!.stream
           .cast<List<int>>()
           .transform(utf8.decoder)
@@ -225,27 +215,23 @@ class Icinga2AlertService {
           .where((line) => line.trim().isNotEmpty)
           .listen(
         (line) {
-          print('DEBUG: Received event line: ${line.length} chars');
-          print(
-              'DEBUG: Event content: ${line.substring(0, line.length > 200 ? 200 : line.length)}${line.length > 200 ? '...' : ''}');
-          session.log('Received event line: ${line.length} chars',
-              level: LogLevel.info);
           _handleEventLine(line);
         },
         onError: (error) {
-          print('DEBUG: Stream error: $error');
           _handleStreamError(error);
         },
         onDone: () {
-          print('DEBUG: Stream done');
           _handleStreamDone();
         },
         cancelOnError: false,
       );
-      print('DEBUG: Stream subscription setup complete');
     } catch (e) {
       session.log('Failed to connect to event stream: $e',
           level: LogLevel.error);
+
+      // Broadcast connection failure to WebSocket clients
+      LogBroadcaster.broadcastLog(
+          '❌ Failed to connect to Icinga2 event stream - will retry');
       _scheduleReconnect();
     }
   }
@@ -253,33 +239,20 @@ class Icinga2AlertService {
   /// Handle a single event line from the stream
   void _handleEventLine(String line) async {
     try {
-      // Only log for StateChange events to reduce noise
       final event = jsonDecode(line) as Map<String, dynamic>;
       final eventType = event['type'];
 
       if (eventType == 'StateChange') {
-        print(
-            'DEBUG: Raw StateChange event: ${line.substring(0, line.length > 200 ? 200 : line.length)}...');
-        print('DEBUG: Parsed event type: $eventType');
-        session.log('Parsed event type: $eventType', level: LogLevel.info);
-      }
-
-      if (eventType == 'StateChange') {
-        print('DEBUG: Processing StateChange event');
         session.log('Processing StateChange event', level: LogLevel.info);
         await _processStateChangeEvent(event);
       } else if (eventType == 'CheckResult') {
-        // Add debug logging to see what's happening with CheckResult events
-        print('DEBUG: Processing CheckResult event');
         session.log('Processing CheckResult event', level: LogLevel.info);
         await _processCheckResultEvent(event);
       } else {
         // Reduce noise from other event types
-        // print('DEBUG: Received other event type: $eventType');
         // session.log('Received other event type: $eventType', level: LogLevel.info);
       }
     } catch (e) {
-      print('DEBUG: Error parsing event line: $e');
       session.log('Error parsing event line: $e', level: LogLevel.warning);
     }
   }
@@ -353,8 +326,6 @@ class Icinga2AlertService {
       final host = event['host'] as String;
       final service = event['service'] as String?;
 
-      print('DEBUG: CheckResult event - host=$host, service=$service');
-
       // Skip host checks, only process services
       if (service == null) {
         return;
@@ -391,8 +362,6 @@ class Icinga2AlertService {
           ((event['timestamp'] as double) * 1000).round());
 
       final canonicalKey = '$host!$service';
-      print(
-          'DEBUG: State change detected for $canonicalKey: $previousHardState → $state');
       session.log('CheckResult state transition: $canonicalKey, state=$state',
           level: LogLevel.info);
 
@@ -405,8 +374,6 @@ class Icinga2AlertService {
 
       // Check if we need to send an alert
       if (currentAlertState != storedState) {
-        print(
-            'DEBUG: ⚠️ ALERT: $canonicalKey transitioned $storedState → $currentAlertState');
         session.log(
             'ALERT: State transition $storedState -> $currentAlertState for $canonicalKey',
             level: LogLevel.warning);
@@ -416,8 +383,7 @@ class Icinga2AlertService {
             canonicalKey, host, service, currentAlertState, timestamp);
       } else {
         // Transition detected in Icinga2 but already at correct state in our DB
-        print(
-            'DEBUG: Already at correct state: $canonicalKey = $currentAlertState');
+        // No action needed
       }
     } catch (e) {
       session.log('Error processing CheckResult event: $e',
@@ -478,21 +444,15 @@ class Icinga2AlertService {
     // Determine if we should send an alert
     if (fromState == AlertState.ok && toState == AlertState.alertingCritical) {
       // Send CRITICAL alert
-      final checkResult = event['check_result'] as Map<String, dynamic>?;
-      final output = checkResult?['output'] as String? ?? 'No output available';
-      alertMessage = 'CRITICAL: $output';
+      alertMessage = 'CRITICAL: Service has entered critical state';
     } else if (fromState == AlertState.alertingCritical &&
         toState == AlertState.ok) {
       // Send RECOVERY alert
-      final checkResult = event['check_result'] as Map<String, dynamic>?;
-      final output = checkResult?['output'] as String? ?? 'Service recovered';
-      alertMessage = 'RECOVERY: $output';
+      alertMessage = 'RECOVERY: Service has recovered';
     } else if (fromState == AlertState.criticalSuppressed &&
         toState == AlertState.alertingCritical) {
       // Send CRITICAL alert (came out of suppression)
-      final checkResult = event['check_result'] as Map<String, dynamic>?;
-      final output = checkResult?['output'] as String? ?? 'No output available';
-      alertMessage = 'CRITICAL: $output';
+      alertMessage = 'CRITICAL: Service has entered critical state';
     }
 
     // Create alert history entry if we have a message
@@ -501,6 +461,15 @@ class Icinga2AlertService {
           canonicalKey, host, service, toState.value, alertMessage, timestamp);
       session.log('Alert: $canonicalKey -> $alertMessage',
           level: LogLevel.info);
+
+      // Broadcast alert to real-time WebSocket clients with appropriate glyph
+      if (toState == AlertState.ok) {
+        // Recovery alert - use checkmark
+        LogBroadcaster.broadcastLog('✅ $alertMessage for $canonicalKey');
+      } else {
+        // Critical alert - use warning
+        LogBroadcaster.broadcastLog('🚨 $alertMessage for $canonicalKey');
+      }
     }
   }
 
@@ -576,12 +545,22 @@ class Icinga2AlertService {
   /// Handle stream errors
   void _handleStreamError(dynamic error) {
     session.log('Event stream error: $error', level: LogLevel.error);
+
+    // Broadcast stream error to WebSocket clients
+    LogBroadcaster.broadcastLog(
+        '⚠️ Icinga2 event stream error - reconnecting...');
+
     _scheduleReconnect();
   }
 
   /// Handle stream completion
   void _handleStreamDone() {
     session.log('Event stream closed', level: LogLevel.warning);
+
+    // Broadcast stream closure to WebSocket clients
+    LogBroadcaster.broadcastLog(
+        '🔄 Icinga2 event stream disconnected - reconnecting...');
+
     _scheduleReconnect();
   }
 
@@ -654,7 +633,6 @@ class Icinga2AlertService {
   /// Check initial state of all services to detect existing critical states
   Future<void> _checkInitialServiceStates() async {
     try {
-      print('DEBUG: Making initial state API call...');
       session.log('Checking initial service states...', level: LogLevel.info);
 
       final response = await _dio.post(
@@ -676,13 +654,11 @@ class Icinga2AlertService {
         ),
       );
 
-      print('DEBUG: API response status: ${response.statusCode}');
       if (response.statusCode != 200) {
         throw Exception('Failed to get service states: ${response.statusCode}');
       }
 
       final services = response.data['results'] as List;
-      print('DEBUG: Found ${services.length} services in hard critical state');
       session.log('Found ${services.length} services in hard critical state',
           level: LogLevel.info);
 
@@ -705,17 +681,11 @@ class Icinga2AlertService {
         final currentAlertState =
             _calculateAlertState(state, downtimeDepth, acknowledgement);
 
-        print(
-            'DEBUG: Service $canonicalKey: state=$state, alertState=$currentAlertState');
-
         // Get stored state
         final storedState = await _getStoredState(canonicalKey);
 
         // Check if we need to send an alert
         if (currentAlertState != storedState) {
-          print(
-              'DEBUG: State change detected for $canonicalKey: $storedState -> $currentAlertState');
-
           // Create a synthetic event for logging
           final syntheticEvent = {
             'host': host,
@@ -741,11 +711,9 @@ class Icinga2AlertService {
         }
       }
 
-      print('DEBUG: Completed processing ${services.length} services');
       session.log('Initial service state check completed',
           level: LogLevel.info);
     } catch (e) {
-      print('DEBUG: Error in initial state check: $e');
       session.log('Error checking initial service states: $e',
           level: LogLevel.error);
     }
