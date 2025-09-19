@@ -58,10 +58,10 @@ class LinuxServiceRestartService {
       LogBroadcaster.broadcastLog(
           '🔄 ${sshClient.logOnly ? 'SIMULATING' : 'EXECUTING'} service restart: ${rule.systemdServiceName} on ${connection.host}');
 
-      // Check restart throttling
+      // Check restart limit (simple counter, not time-based)
       if (!_canRestart(rule, restartKey)) {
         final message =
-            'Restart throttled: ${rule.systemdServiceName} on ${connection.host} (max ${rule.maxRestartsPerHour}/hour)';
+            'Restart limit reached: ${rule.systemdServiceName} on ${connection.host} (max ${rule.maxRestarts} attempts)';
         session.log(message, level: LogLevel.warning);
 
         LogBroadcaster.broadcastLog('⏸️ $message');
@@ -248,17 +248,12 @@ class LinuxServiceRestartService {
     }
   }
 
-  /// Check if restart is allowed based on throttling rules
+  /// Check if restart is allowed based on simple counter limit
   bool _canRestart(RestartRule rule, String restartKey) {
     final history = _restartHistory[restartKey] ?? [];
-    final now = DateTime.now();
-    final oneHourAgo = now.subtract(const Duration(hours: 1));
 
-    // Count restarts in the last hour
-    final recentRestarts =
-        history.where((time) => time.isAfter(oneHourAgo)).length;
-
-    return recentRestarts < rule.maxRestartsPerHour;
+    // Simple counter check - compare against maxRestarts limit
+    return history.length < rule.maxRestarts;
   }
 
   /// Record a restart attempt
@@ -270,10 +265,22 @@ class LinuxServiceRestartService {
     history.add(now);
     _restartHistory[restartKey] = history;
 
-    // Clean up old history (keep last 24 hours)
-    final oneDayAgo = now.subtract(const Duration(hours: 24));
-    _restartHistory[restartKey] =
-        history.where((time) => time.isAfter(oneDayAgo)).toList();
+    // Note: History is reset by resetRestartCounter when state changes from CRITICAL to OK
+  }
+
+  /// Reset restart counter when Icinga state changes from CRITICAL to OK
+  void resetRestartCounter(String host, String serviceName) {
+    final restartKey = '${host}_$serviceName';
+    _restartHistory.remove(restartKey);
+    _lastRestartAttempt.remove(restartKey);
+
+    session.log(
+      'Reset restart counter for $serviceName on $host (state changed from CRITICAL to OK)',
+      level: LogLevel.info,
+    );
+
+    LogBroadcaster.broadcastLog(
+        '🔄 Reset restart counter: $serviceName on $host (service recovered)');
   }
 
   /// Get restart statistics for monitoring

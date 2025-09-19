@@ -2,21 +2,25 @@ import 'ssh_connection.dart';
 
 /// Defines a rule for restarting services based on Icinga2 alerts
 class RestartRule {
-  final String icingaServicePattern; // Pattern to match Icinga2 service names
+  final String?
+      icingaServicePattern; // Pattern to match Icinga2 service names (deprecated - only used for backward compatibility)
   final String systemdServiceName; // Name of systemd service to restart
-  final String sshConnectionName; // Name of SSH connection to use
+  final String
+      sshConnectionName; // Name of SSH connection to use (defaults to "auto")
   final bool enabled;
-  final int maxRestartsPerHour;
+  final int
+      maxRestarts; // Maximum restart attempts (resets when Icinga state changes from CRITICAL to OK)
   final Duration cooldownPeriod;
   final List<String> preChecks; // Commands to run before restart
   final List<String> postChecks; // Commands to run after restart
 
   const RestartRule({
-    required this.icingaServicePattern,
+    this.icingaServicePattern,
     required this.systemdServiceName,
-    required this.sshConnectionName,
+    this.sshConnectionName = "auto",
     this.enabled = true,
-    this.maxRestartsPerHour = 3,
+    this.maxRestarts =
+        3, // Default: allow 3 restart attempts (resets on state change)
     this.cooldownPeriod = const Duration(minutes: 10),
     this.preChecks = const [],
     this.postChecks = const [],
@@ -24,11 +28,13 @@ class RestartRule {
 
   factory RestartRule.fromMap(Map<String, dynamic> map) {
     return RestartRule(
-      icingaServicePattern: map['icingaServicePattern'] as String,
+      icingaServicePattern: map['icingaServicePattern'] as String?,
       systemdServiceName: map['systemdServiceName'] as String,
-      sshConnectionName: map['sshConnectionName'] as String,
+      sshConnectionName: map['sshConnectionName'] as String? ?? "auto",
       enabled: map['enabled'] as bool? ?? true,
-      maxRestartsPerHour: map['maxRestartsPerHour'] as int? ?? 3,
+      maxRestarts: map['maxRestarts'] as int? ??
+          map['maxRestartsPerHour'] as int? ??
+          3, // Backward compatibility: accept old field name
       cooldownPeriod: Duration(
         minutes: map['cooldownMinutes'] as int? ?? 10,
       ),
@@ -49,7 +55,7 @@ class RestartRule {
       'systemdServiceName': systemdServiceName,
       'sshConnectionName': sshConnectionName,
       'enabled': enabled,
-      'maxRestartsPerHour': maxRestartsPerHour,
+      'maxRestarts': maxRestarts,
       'cooldownMinutes': cooldownPeriod.inMinutes,
       'preChecks': preChecks,
       'postChecks': postChecks,
@@ -57,9 +63,10 @@ class RestartRule {
   }
 
   /// Check if this rule matches an Icinga2 service name
+  /// DISABLED: Pattern matching is no longer supported - only auto-detection via systemd_unit_unit
   bool matchesService(String icingaServiceName) {
-    // Simple pattern matching - could be enhanced with regex
-    return icingaServiceName.contains(icingaServicePattern);
+    // Pattern matching disabled - only use auto-detection via systemd_unit_unit
+    return false;
   }
 
   /// Get the systemctl restart command
@@ -70,7 +77,7 @@ class RestartRule {
 
   @override
   String toString() =>
-      'RestartRule($icingaServicePattern -> $systemdServiceName on $sshConnectionName)';
+      'RestartRule(${icingaServicePattern ?? "auto-detect"} -> $systemdServiceName on $sshConnectionName)';
 
   @override
   bool operator ==(Object other) =>
@@ -138,9 +145,33 @@ class SshRestartConfig {
         .toList();
   }
 
+  /// Find restart rules that match a systemd service name
+  /// Used for auto-detected services from systemd_unit_unit variable
+  RestartRule? findRuleBySystemdService(String systemdServiceName) {
+    return rules
+        .where((rule) =>
+            rule.enabled && rule.systemdServiceName == systemdServiceName)
+        .firstOrNull;
+  }
+
   /// Get SSH connection by name
   SshConnection? getConnection(String name) {
     return connections[name];
+  }
+
+  /// Get SSH connection by hostname (from Icinga2 host_name)
+  /// This allows automatic connection selection based on the target host
+  SshConnection? getConnectionByHost(String hostName) {
+    // First try exact hostname match
+    for (final connection in connections.values) {
+      if (connection.host == hostName) {
+        return connection;
+      }
+    }
+
+    // If no exact match, try to find by connection name matching hostname
+    // This handles cases where connection name matches the hostname
+    return connections[hostName];
   }
 
   @override

@@ -61,5 +61,6 @@ class SshConfig {
   }
 
   @override
-  String toString() => 'SshConfig(enabled=$enabled, maxConnections=$maxConnections)';
+  String toString() =>
+      'SshConfig(enabled=$enabled, maxConnections=$maxConnections)';
 }

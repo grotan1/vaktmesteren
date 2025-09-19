@@ -97,8 +97,11 @@ class SshRestartConfigLoader {
     for (int i = 0; i < config.rules.length; i++) {
       final rule = config.rules[i];
 
-      if (rule.icingaServicePattern.isEmpty) {
-        errors.add('Rule $i: icingaServicePattern cannot be empty');
+      // icingaServicePattern is now optional (pattern matching disabled)
+      // Only validate if it's provided for backward compatibility
+      if (rule.icingaServicePattern != null &&
+          rule.icingaServicePattern!.isEmpty) {
+        errors.add('Rule $i: icingaServicePattern cannot be empty if provided');
       }
 
       if (rule.systemdServiceName.isEmpty) {
@@ -115,8 +118,8 @@ class SshRestartConfigLoader {
             'Rule $i: SSH connection "${rule.sshConnectionName}" not found');
       }
 
-      if (rule.maxRestartsPerHour <= 0) {
-        errors.add('Rule $i: maxRestartsPerHour must be positive');
+      if (rule.maxRestarts <= 0) {
+        errors.add('Rule $i: maxRestarts must be positive');
       }
 
       if (rule.cooldownPeriod.isNegative) {
@@ -160,7 +163,7 @@ rules:
     systemdServiceName: "nginx"             # Restart this systemd service
     sshConnectionName: "web-server-1"       # On this SSH connection
     enabled: true
-    maxRestartsPerHour: 3                   # Throttling: max 3 restarts per hour
+    maxRestarts: 3                   # Allow 3 restart attempts (resets when state changes)
     cooldownMinutes: 10                     # Wait 10 minutes between restarts
     preChecks:                              # Commands to run before restart
       - "sudo nginx -t"                     # Test nginx config
@@ -171,7 +174,7 @@ rules:
     systemdServiceName: "mysql"
     sshConnectionName: "database-server"
     enabled: true
-    maxRestartsPerHour: 2                   # Databases need more careful handling
+    maxRestarts: 2                   # Conservative for databases (resets when state changes)
     cooldownMinutes: 15
     preChecks:
       - "sudo mysqladmin ping"              # Check if MySQL is responsive
@@ -183,7 +186,7 @@ rules:
     systemdServiceName: "myapp"
     sshConnectionName: "web-server-1"
     enabled: false                          # Disabled rule (for testing)
-    maxRestartsPerHour: 5
+    maxRestarts: 5
     cooldownMinutes: 5
 ''';
   }

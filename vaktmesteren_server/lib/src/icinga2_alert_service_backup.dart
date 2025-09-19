@@ -586,25 +586,17 @@ class Icinga2AlertService {
     // Determine if we should send an alert
     if (fromState == AlertState.ok && toState == AlertState.alertingCritical) {
       // Send CRITICAL alert
-      alertMessage =
-          'CRITICAL: Service ${service ?? 'Unknown'} on $host has entered critical state';
+      alertMessage = 'CRITICAL: Service has entered critical state';
       session.log('Alert condition met: OK → CRITICAL', level: LogLevel.info);
     } else if (fromState == AlertState.alertingCritical &&
         toState == AlertState.ok) {
       // Send RECOVERY alert
-      alertMessage =
-          'RECOVERY: Service ${service ?? 'Unknown'} on $host has recovered';
+      alertMessage = 'RECOVERY: Service has recovered';
       session.log('Alert condition met: CRITICAL → OK', level: LogLevel.info);
-
-      // Reset restart counter when service recovers
-      if (_restartService != null && service != null) {
-        _restartService!.resetRestartCounter(host, service);
-      }
     } else if (fromState == AlertState.criticalSuppressed &&
         toState == AlertState.alertingCritical) {
       // Send CRITICAL alert (came out of suppression)
-      alertMessage =
-          'CRITICAL: Service ${service ?? 'Unknown'} on $host has entered critical state';
+      alertMessage = 'CRITICAL: Service has entered critical state';
       session.log('Alert condition met: SUPPRESSED → CRITICAL',
           level: LogLevel.info);
     } else {
@@ -629,10 +621,10 @@ class Icinga2AlertService {
       // Broadcast alert to real-time WebSocket clients with appropriate glyph
       if (toState == AlertState.ok) {
         // Recovery alert - use checkmark
-        LogBroadcaster.broadcastLog('✅ $alertMessage');
+        LogBroadcaster.broadcastLog('✅ $alertMessage for $canonicalKey');
       } else {
         // Critical alert - use warning
-        LogBroadcaster.broadcastLog('🚨 $alertMessage');
+        LogBroadcaster.broadcastLog('🚨 $alertMessage for $canonicalKey');
       }
 
       // Send Teams notifications for alerts
@@ -773,7 +765,7 @@ class Icinga2AlertService {
         LogBroadcaster.broadcastLog(
             '🔄 Rule-based automatic restart: $systemdUnitName on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
         LogBroadcaster.broadcastLog(
-            '⚙️ Rule settings: max ${existingRule.maxRestarts} attempts, ${existingRule.cooldownPeriod.inMinutes}min cooldown');
+            '⚙️ Rule settings: max ${existingRule.maxRestartsPerHour}/hour, ${existingRule.cooldownPeriod.inMinutes}min cooldown');
 
         // Execute the restart using the existing rule
         final result = await _restartService!
@@ -795,107 +787,14 @@ class Icinga2AlertService {
         return;
       }
 
-      // No restart rule found for this systemd service - use default restart behavior
+      // No restart rule found for this systemd service - do NOT restart
       session.log(
-          'No specific restart rule found for systemd service: $systemdUnitName, applying default restart behavior',
+          'No specific restart rule found for systemd service: $systemdUnitName, using default behavior',
           level: LogLevel.info);
       LogBroadcaster.broadcastLog(
-          '🔧 No specific rule found for auto-detected service: $systemdUnitName, using default restart behavior');
+          '� No specific rule found for auto-detected service: $systemdUnitName, using default restart behavior');
       LogBroadcaster.broadcastLog(
-          '💡 Default restart behavior: Service will be restarted with conservative settings');
-
-      // For automatic detection without specific rules, determine which SSH connection to use
-      SshConnection? connection;
-
-      // First try to find connection by hostname (from Icinga2 host_name)
-      connection = _sshConfig!.getConnectionByHost(host);
-      if (connection != null) {
-        session.log('Found SSH connection for host "$host": ${connection.name}',
-            level: LogLevel.info);
-        LogBroadcaster.broadcastLog(
-            '🎯 Auto-selected SSH connection for host "$host": ${connection.name}');
-      }
-
-      // If no host-based connection found, try to get the default connection
-      if (connection == null) {
-        final defaultConnection = _sshConfig!.getConnection('default');
-        if (defaultConnection != null) {
-          // Use default connection as a template but with the actual target hostname
-          session.log(
-              'No connection found for host "$host", creating connection using default template',
-              level: LogLevel.info);
-          LogBroadcaster.broadcastLog(
-              '🔧 Creating SSH connection for host "$host" using default template');
-
-          connection = SshConnection(
-            name: 'auto-$host',
-            host: host, // Use the actual Icinga2 hostname!
-            port: defaultConnection.port,
-            username: defaultConnection.username,
-            privateKeyPath: defaultConnection.privateKeyPath,
-            password: defaultConnection.password,
-            timeout: defaultConnection.timeout,
-          );
-        } else {
-          // If no default connection defined, create a dynamic connection using standard defaults
-          session.log(
-              'No default connection template defined, creating dynamic connection for host "$host" with standard defaults',
-              level: LogLevel.info);
-          LogBroadcaster.broadcastLog(
-              '🌟 Creating dynamic SSH connection for host "$host" with standard defaults');
-
-          // Create a temporary connection using the Icinga2 hostname
-          // Uses standard defaults that should work for most monitoring setups
-          connection = SshConnection(
-            name: 'dynamic-$host',
-            host: host, // Use the actual Icinga2 hostname!
-            port: 22,
-            username: 'monitoring', // Standard monitoring username
-            privateKeyPath: '/etc/ssh/monitoring_key', // Standard key path
-            timeout: const Duration(seconds: 30),
-          );
-        }
-      }
-
-      // Connection should now be available (either found or dynamically created)
-      // This ensures we always have a connection for automatic restart
-
-      // Create a default restart rule for the automatic detection (with sensible default settings)
-      final defaultRule = RestartRule(
-        systemdServiceName: systemdUnitName,
-        // Use conservative default settings for auto-detected services without specific rules
-        enabled: true,
-        maxRestarts: 3, // Conservative default (resets when state changes)
-        cooldownPeriod: const Duration(minutes: 10), // Conservative cooldown
-        preChecks: [], // No pre-checks by default
-        postChecks: [
-          'sudo systemctl is-active $systemdUnitName'
-        ], // Basic post-check
-      );
-
-      // Log the restart attempt
-      LogBroadcaster.broadcastLog(
-          '🔄 Default automatic restart: $systemdUnitName on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
-      LogBroadcaster.broadcastLog(
-          '⚙️ Default settings: max 3 attempts, 10min cooldown, basic post-check only');
-
-      // Execute the restart using the default rule
-      final result = await _restartService!
-          .restartService(defaultRule, connection, icingaServiceName);
-
-      if (result.success) {
-        session.log(
-            'Default automatic service restart ${result.wasSimulated ? 'simulation ' : ''}successful: ${result.message}',
-            level: LogLevel.info);
-        LogBroadcaster.broadcastLog(
-            '✅ Default automatic restart successful: $systemdUnitName');
-      } else {
-        session.log(
-            'Default automatic service restart ${result.wasSimulated ? 'simulation ' : ''}failed: ${result.message}',
-            level: LogLevel.warning);
-        LogBroadcaster.broadcastLog(
-            '❌ Default automatic restart failed: ${result.message}');
-      }
+          '� To enable SSH restart: Add rule with systemdServiceName: "$systemdUnitName" to configuration');
       return;
     } catch (e) {
       session.log('Error in automatic service restart for $systemdUnitName: $e',

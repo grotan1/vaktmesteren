@@ -40,7 +40,7 @@ class SshConnectionPool {
   /// Get or create an SSH client for the connection
   Future<SSHClient> getClient(SshConnection connection) async {
     final key = _getConnectionKey(connection);
-    
+
     // Check if we're in rate limiting period
     if (_isRateLimited(key)) {
       throw Exception('Connection rate limited for $key');
@@ -51,7 +51,8 @@ class SshConnectionPool {
     if (poolEntry != null) {
       poolEntry.inUse = true;
       if (config.logConnectionEvents) {
-        session.log('🔄 Reusing SSH connection to ${connection.connectionString}',
+        session.log(
+            '🔄 Reusing SSH connection to ${connection.connectionString}',
             level: LogLevel.debug);
       }
       return poolEntry.client;
@@ -69,12 +70,13 @@ class SshConnectionPool {
   void releaseClient(SshConnection connection, SSHClient client) {
     final key = _getConnectionKey(connection);
     final entries = _pools[key] ?? [];
-    
+
     for (final entry in entries) {
       if (entry.client == client) {
         entry.inUse = false;
         if (config.logConnectionEvents) {
-          session.log('↩️ Released SSH connection to ${connection.connectionString}',
+          session.log(
+              '↩️ Released SSH connection to ${connection.connectionString}',
               level: LogLevel.debug);
         }
         break;
@@ -85,10 +87,11 @@ class SshConnectionPool {
   /// Create a new SSH connection
   Future<SSHClient> _createNewConnection(SshConnection connection) async {
     final key = _getConnectionKey(connection);
-    
+
     try {
       if (config.logConnectionEvents) {
-        session.log('🔗 Creating new SSH connection to ${connection.connectionString}',
+        session.log(
+            '🔗 Creating new SSH connection to ${connection.connectionString}',
             level: LogLevel.info);
       }
 
@@ -101,11 +104,11 @@ class SshConnectionPool {
       final client = SSHClient(
         socket,
         username: connection.username,
-        onPasswordRequest: connection.password != null 
-            ? () => connection.password! 
-            : null,
+        onPasswordRequest:
+            connection.password != null ? () => connection.password! : null,
         identities: connection.privateKeyPath != null
-            ? [SSHKeyPair.fromPem(await File(connection.privateKeyPath!).readAsString())]
+            ? await SSHKeyPair.fromPem(
+                await File(connection.privateKeyPath!).readAsString())
             : null,
       );
 
@@ -119,9 +122,10 @@ class SshConnectionPool {
 
       _pools.putIfAbsent(key, () => []).add(entry);
       _connectionAttempts[key] = 0; // Reset failure count on success
-      
+
       if (config.logConnectionEvents) {
-        session.log('✅ SSH connection established to ${connection.connectionString}',
+        session.log(
+            '✅ SSH connection established to ${connection.connectionString}',
             level: LogLevel.info);
       }
 
@@ -129,7 +133,8 @@ class SshConnectionPool {
     } catch (e) {
       _recordConnectionFailure(key);
       if (config.logConnectionEvents) {
-        session.log('❌ SSH connection failed to ${connection.connectionString}: $e',
+        session.log(
+            '❌ SSH connection failed to ${connection.connectionString}: $e',
             level: LogLevel.error);
       }
       rethrow;
@@ -142,7 +147,7 @@ class SshConnectionPool {
     if (entries == null) return null;
 
     for (final entry in entries) {
-      if (!entry.inUse && entry.client.isConnected) {
+      if (!entry.inUse) {
         return entry;
       }
     }
@@ -169,10 +174,10 @@ class SshConnectionPool {
   bool _isRateLimited(String key) {
     final attempts = _connectionAttempts[key] ?? 0;
     final lastFailure = _lastConnectionFailure[key];
-    
+
     if (attempts < config.maxRetries) return false;
     if (lastFailure == null) return false;
-    
+
     final timeSinceFailure = DateTime.now().difference(lastFailure);
     return timeSinceFailure < config.retryDelay;
   }
@@ -185,8 +190,8 @@ class SshConnectionPool {
     for (final key in _pools.keys.toList()) {
       final entries = _pools[key]!;
       entries.removeWhere((entry) {
-        final isStale = !entry.inUse && 
-                       now.difference(entry.lastUsed) > maxIdleTime;
+        final isStale =
+            !entry.inUse && now.difference(entry.lastUsed) > maxIdleTime;
         if (isStale) {
           try {
             entry.client.close();
@@ -201,7 +206,7 @@ class SshConnectionPool {
         }
         return isStale;
       });
-      
+
       if (entries.isEmpty) {
         _pools.remove(key);
       }
@@ -238,7 +243,7 @@ class SshConnectionPool {
   /// Close all connections and cleanup
   void dispose() {
     _cleanupTimer.cancel();
-    
+
     for (final entries in _pools.values) {
       for (final entry in entries) {
         try {
@@ -249,11 +254,11 @@ class SshConnectionPool {
         }
       }
     }
-    
+
     _pools.clear();
     _connectionAttempts.clear();
     _lastConnectionFailure.clear();
-    
+
     if (config.logConnectionEvents) {
       session.log('🔐 SSH connection pool disposed', level: LogLevel.info);
     }

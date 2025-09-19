@@ -4,7 +4,6 @@ import 'package:vaktmesteren_server/src/ops/models/ssh_config.dart';
 
 void main() {
   group('SSH Client Tests', () {
-
     group('Configuration', () {
       test('should create SSH config from map', () {
         final configMap = {
@@ -93,7 +92,8 @@ void main() {
           'username': 'admin',
         });
 
-        expect(connection.connectionString, equals('admin@server.example.com:2222'));
+        expect(connection.connectionString,
+            equals('admin@server.example.com:2222'));
       });
     });
   });

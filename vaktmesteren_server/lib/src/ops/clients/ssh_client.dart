@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:serverpod/serverpod.dart';
 import '../models/ssh_connection.dart';
@@ -66,7 +65,8 @@ class SshClient {
 
     final sanitizedCommand = _sanitizeCommand(command);
     if (sanitizedCommand != command) {
-      session.log('⚠️ Command was sanitized for security', level: LogLevel.warning);
+      session.log('⚠️ Command was sanitized for security',
+          level: LogLevel.warning);
     }
 
     try {
@@ -79,9 +79,11 @@ class SshClient {
       }
 
       if (logOnly) {
-        return await _simulateExecution(sanitizedCommand, actualTimeout, startTime);
+        return await _simulateExecution(
+            sanitizedCommand, actualTimeout, startTime);
       } else {
-        return await _executeReal(connection, sanitizedCommand, actualTimeout, startTime);
+        return await _executeReal(
+            connection, sanitizedCommand, actualTimeout, startTime);
       }
     } catch (e) {
       final duration = DateTime.now().difference(startTime);
@@ -99,7 +101,8 @@ class SshClient {
       );
     } finally {
       _lastCommandTime[connectionKey] = DateTime.now();
-      _commandCounter[connectionKey] = (_commandCounter[connectionKey] ?? 0) + 1;
+      _commandCounter[connectionKey] =
+          (_commandCounter[connectionKey] ?? 0) + 1;
     }
   }
 
@@ -111,42 +114,36 @@ class SshClient {
     DateTime startTime,
   ) async {
     SSHClient? client;
-    
+
     try {
       // Get SSH client from pool
       client = await _connectionPool.getClient(connection);
-      
+
       // Execute command
       final sshSession = await client.execute(command).timeout(timeout);
-      
+
       // Collect stdout and stderr
       final stdoutBuffer = StringBuffer();
       final stderrBuffer = StringBuffer();
-      
+
       final stdoutCompleter = Completer<void>();
       final stderrCompleter = Completer<void>();
-      
-      sshSession.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .listen(
+
+      sshSession.stdout.cast<List<int>>().transform(utf8.decoder).listen(
             (data) => stdoutBuffer.write(data),
             onDone: () => stdoutCompleter.complete(),
             onError: (e) => stdoutCompleter.completeError(e),
           );
-          
-      sshSession.stderr
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .listen(
+
+      sshSession.stderr.cast<List<int>>().transform(utf8.decoder).listen(
             (data) => stderrBuffer.write(data),
             onDone: () => stderrCompleter.complete(),
             onError: (e) => stderrCompleter.completeError(e),
           );
-      
+
       // Wait for command completion
       final exitCode = sshSession.exitCode ?? 1;
-      
+
       // Wait for stream completion with timeout
       try {
         await Future.wait([
@@ -154,12 +151,13 @@ class SshClient {
           stderrCompleter.future,
         ]).timeout(const Duration(seconds: 5));
       } catch (e) {
-        session.log('Warning: Stream completion timeout: $e', level: LogLevel.warning);
+        session.log('Warning: Stream completion timeout: $e',
+            level: LogLevel.warning);
       }
-      
+
       final duration = DateTime.now().difference(startTime);
       _recordCommandTiming(connection, duration);
-      
+
       final sshResult = SshResult(
         exitCode: exitCode,
         stdout: stdoutBuffer.toString(),
@@ -175,11 +173,13 @@ class SshClient {
         );
 
         if (sshResult.stdout.isNotEmpty) {
-          session.log('📤 stdout: ${sshResult.stdout.trim()}', level: LogLevel.debug);
+          session.log('📤 stdout: ${sshResult.stdout.trim()}',
+              level: LogLevel.debug);
         }
 
         if (sshResult.stderr.isNotEmpty) {
-          session.log('📤 stderr: ${sshResult.stderr.trim()}', level: LogLevel.debug);
+          session.log('📤 stderr: ${sshResult.stderr.trim()}',
+              level: LogLevel.debug);
         }
       }
 
@@ -190,7 +190,7 @@ class SshClient {
         '⏰ SSH command timed out after ${duration.inSeconds}s',
         level: LogLevel.warning,
       );
-      
+
       return SshResult(
         exitCode: 124, // Standard timeout exit code
         stdout: '',
@@ -240,11 +240,13 @@ class SshClient {
       );
 
       if (result.stdout.isNotEmpty) {
-        session.log('📤 Simulated stdout: ${result.stdout}', level: LogLevel.debug);
+        session.log('📤 Simulated stdout: ${result.stdout}',
+            level: LogLevel.debug);
       }
 
       if (result.stderr.isNotEmpty) {
-        session.log('📤 Simulated stderr: ${result.stderr}', level: LogLevel.debug);
+        session.log('📤 Simulated stderr: ${result.stderr}',
+            level: LogLevel.debug);
       }
     }
 
@@ -295,18 +297,19 @@ class SshClient {
   String _sanitizeCommand(String command) {
     // Remove dangerous characters and patterns
     var sanitized = command;
-    
+
     // Remove null bytes
     sanitized = sanitized.replaceAll('\x00', '');
-    
+
     // Remove control characters except newline and tab
-    sanitized = sanitized.replaceAll(RegExp(r'[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
-    
+    sanitized =
+        sanitized.replaceAll(RegExp(r'[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+
     // Limit command length
     if (sanitized.length > 4096) {
       sanitized = sanitized.substring(0, 4096);
     }
-    
+
     return sanitized.trim();
   }
 
@@ -314,7 +317,7 @@ class SshClient {
   void _recordCommandTiming(SshConnection connection, Duration duration) {
     final key = connection.connectionString;
     _commandTimings.putIfAbsent(key, () => []).add(duration);
-    
+
     // Keep only last 100 timings per connection
     final timings = _commandTimings[key]!;
     if (timings.length > 100) {
@@ -378,7 +381,7 @@ class SshClient {
   Map<String, dynamic> getConnectionStats() {
     final poolStats = _connectionPool.getStats();
     final commandStats = _getCommandStats();
-    
+
     return {
       'logOnlyMode': logOnly,
       'sshEnabled': config.enabled,
@@ -399,28 +402,34 @@ class SshClient {
     int totalCommands = 0;
     final Map<String, int> commandsPerHost = {};
     final Map<String, double> avgTimingsPerHost = {};
-    
+
     for (final entry in _commandCounter.entries) {
       final count = entry.value;
       totalCommands += count;
       commandsPerHost[entry.key] = count;
     }
-    
+
     for (final entry in _commandTimings.entries) {
       final timings = entry.value;
       if (timings.isNotEmpty) {
-        final avgMs = timings.map((d) => d.inMilliseconds).reduce((a, b) => a + b) / timings.length;
+        final avgMs =
+            timings.map((d) => d.inMilliseconds).reduce((a, b) => a + b) /
+                timings.length;
         avgTimingsPerHost[entry.key] = avgMs;
       }
     }
-    
+
     return {
       'totalCommands': totalCommands,
       'commandsPerHost': commandsPerHost,
       'averageTimingsMs': avgTimingsPerHost,
       'recentCommandsCount': _commandCounter.entries
-          .where((entry) => _lastCommandTime[entry.key] != null &&
-                 DateTime.now().difference(_lastCommandTime[entry.key]!).inMinutes < 60)
+          .where((entry) =>
+              _lastCommandTime[entry.key] != null &&
+              DateTime.now()
+                      .difference(_lastCommandTime[entry.key]!)
+                      .inMinutes <
+                  60)
           .fold(0, (sum, entry) => sum + entry.value),
     };
   }
@@ -431,7 +440,7 @@ class SshClient {
     _commandCounter.clear();
     _lastCommandTime.clear();
     _commandTimings.clear();
-    
+
     session.log('🔐 SSH client disposed', level: LogLevel.info);
   }
 }
