@@ -64,3 +64,16 @@ sessionLogs:
 # How long to retain alert history (in days). Rows older than this will be
 # deleted by the retention job. Default: 3
 retention_days: 3
+
+# SSH client configuration
+ssh:
+  enabled: true  # Enable real SSH in production
+  maxConnections: 20
+  connectionTimeoutSeconds: 30
+  commandTimeoutSeconds: 600  # 10 minutes for production workloads
+  maxRetries: 5
+  retryDelaySeconds: 5
+  verifyHostKeys: true
+  knownHostsPath: ~/.ssh/known_hosts
+  logCommands: false  # Reduce log verbosity in production
+  logConnectionEvents: true

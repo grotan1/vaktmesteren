@@ -55,6 +55,19 @@ sessionLogs:
 # deleted by the retention job. Default: 3
 retention_days: 3
 
+# SSH client configuration
+ssh:
+  enabled: false  # Disable real SSH in development, use simulation only
+  maxConnections: 5
+  connectionTimeoutSeconds: 30
+  commandTimeoutSeconds: 300  # 5 minutes
+  maxRetries: 3
+  retryDelaySeconds: 2
+  verifyHostKeys: true
+  knownHostsPath: ~/.ssh/known_hosts
+  logCommands: true
+  logConnectionEvents: true
+
 # futureCallExecutionEnabled: true # Defaults to true
 
 #futureCall:
