@@ -106,13 +106,15 @@ class RestartRule {
 /// Configuration for the SSH restart system
 class SshRestartConfig {
   final Map<String, SshConnection> connections;
-  final List<RestartRule> rules;
+  final List<RestartRule> rules; // Legacy support
+  final Map<String, String> restartMappings; // service -> connection name
   final bool enabled;
   final bool logOnly; // If true, only log commands instead of executing
 
   const SshRestartConfig({
     required this.connections,
-    required this.rules,
+    this.rules = const [],
+    this.restartMappings = const {},
     this.enabled = true,
     this.logOnly = true, // Default to log-only mode for safety
   });
@@ -132,10 +134,25 @@ class SshRestartConfig {
       );
     }
 
+    // Handle legacy rules for backward compatibility
     final rulesData = map['rules'] as List<dynamic>? ?? [];
     final rules = rulesData
         .map((e) => RestartRule.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
+
+    // Handle new restartMappings structure
+    final mappingsData = map['restartMappings'];
+    final mappingsMap = mappingsData != null
+        ? Map<String, dynamic>.from(mappingsData as Map)
+        : <String, dynamic>{};
+    final restartMappings = <String, String>{};
+
+    for (final entry in mappingsMap.entries) {
+      final serviceName = entry.key;
+      final mappingData = Map<String, dynamic>.from(entry.value as Map);
+      final connectionName = mappingData['connectionName'] as String;
+      restartMappings[serviceName] = connectionName;
+    }
 
     final enabled = map['enabled'] as bool? ?? true;
     final logOnly = map['logOnly'] as bool? ?? true;
@@ -143,25 +160,44 @@ class SshRestartConfig {
     return SshRestartConfig(
       connections: connections,
       rules: rules,
+      restartMappings: restartMappings,
       enabled: enabled,
       logOnly: logOnly,
     );
   }
 
-  /// Find restart rules that match an Icinga2 service
+  /// Find restart rules that match an Icinga2 service (legacy)
   List<RestartRule> findMatchingRules(String icingaServiceName) {
     return rules
         .where((rule) => rule.enabled && rule.matchesService(icingaServiceName))
         .toList();
   }
 
-  /// Find restart rules that match a systemd service name
+  /// Find restart rules that match a systemd service name (legacy)
   /// Used for auto-detected services from systemd_unit_unit variable
   RestartRule? findRuleBySystemdService(String systemdServiceName) {
     return rules
         .where((rule) =>
             rule.enabled && rule.systemdServiceName == systemdServiceName)
         .firstOrNull;
+  }
+
+  /// Get SSH connection for a systemd service (new simplified approach)
+  /// 1. Check restartMappings for explicit mapping
+  /// 2. Fall back to hostname-based connection selection
+  SshConnection? getConnectionForService(
+      String systemdServiceName, String hostName) {
+    // 1. Check explicit restart mapping
+    final connectionName = restartMappings[systemdServiceName];
+    if (connectionName != null) {
+      final connection = connections[connectionName];
+      if (connection != null) {
+        return connection;
+      }
+    }
+
+    // 2. Fall back to hostname-based selection
+    return getConnectionByHost(hostName);
   }
 
   /// Get SSH connection by name
@@ -186,5 +222,5 @@ class SshRestartConfig {
 
   @override
   String toString() =>
-      'SshRestartConfig(${connections.length} connections, ${rules.length} rules, enabled=$enabled, logOnly=$logOnly)';
+      'SshRestartConfig(${connections.length} connections, ${rules.length} rules, ${restartMappings.length} mappings, enabled=$enabled, logOnly=$logOnly)';
 }

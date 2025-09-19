@@ -77,9 +77,10 @@ class LinuxServiceRestartService {
           '🔄 ${sshClient.logOnly ? 'SIMULATING' : 'EXECUTING'} service restart: ${rule.systemdServiceName} on ${connection.host}');
 
       // Check restart limit (simple counter, not time-based)
-      if (!_canRestart(rule, restartKey)) {
+      // Now using connection's maxRestarts instead of rule's maxRestarts
+      if (!_canRestart(connection, restartKey)) {
         final message =
-            'Restart limit reached: ${rule.systemdServiceName} on ${connection.host} (max ${rule.maxRestarts} attempts)';
+            'Restart limit reached: ${rule.systemdServiceName} on ${connection.host} (max ${connection.maxRestarts} attempts)';
         session.log(message, level: LogLevel.warning);
 
         LogBroadcaster.broadcastLog('⏸️ $message');
@@ -94,14 +95,15 @@ class LinuxServiceRestartService {
         );
       }
 
-      // Check cooldown period
+      // Check cooldown period (now using connection's timeBetweenRestartAttempts)
       final lastRestart = _lastRestartAttempt[restartKey];
       if (lastRestart != null &&
-          DateTime.now().difference(lastRestart) < rule.cooldownPeriod) {
-        final cooldownRemaining =
-            rule.cooldownPeriod - DateTime.now().difference(lastRestart);
+          DateTime.now().difference(lastRestart) <
+              connection.timeBetweenRestartAttempts) {
+        final cooldownRemaining = connection.timeBetweenRestartAttempts -
+            DateTime.now().difference(lastRestart);
         final message =
-            'Restart in cooldown: ${rule.systemdServiceName} on ${connection.host} (${rule.cooldownPeriod.inMinutes}min cooldown)';
+            'Restart in cooldown: ${rule.systemdServiceName} on ${connection.host} (${connection.timeBetweenRestartAttempts.inMinutes}min cooldown)';
         session.log(message, level: LogLevel.warning);
 
         LogBroadcaster.broadcastLog('⏸️ $message');
@@ -188,55 +190,51 @@ class LinuxServiceRestartService {
             'Enable command details: exitCode=${enableResult.exitCode}, stdout="${enableResult.stdout.trim()}", stderr="${enableResult.stderr.trim()}"',
             level: LogLevel.debug);
 
-        bool isEnableSuccess = enableResult.isSuccess ||
-            enableError.contains('already enabled') ||
-            enableError.contains('unit files have no installation config') ||
-            enableError
-                .contains('the unit files have no installation config') ||
-            enableError.contains('static unit') ||
-            enableError.contains('masked') ||
-            enableOutput.contains('created symlink') ||
-            enableOutput.contains('already enabled') ||
-            enableOutput.contains('symlink already exists');
+        bool isEnableSuccess = enableResult.isSuccess; // Exit code 0 = success
 
-        // If enable command returned exit code 1 but we haven't detected success yet,
-        // verify with 'systemctl is-enabled' as final check since exit code 1 can
-        // be returned for already-enabled services on some systemd versions
-        if (!isEnableSuccess && enableResult.exitCode == 1) {
-          session.log(
-              'Enable returned exit code 1, verifying actual enable status...',
-              level: LogLevel.debug);
+        // Check for success indicators in output/error text if exit code failed
+        if (!isEnableSuccess) {
+          final enableOutput = enableResult.stdout.toLowerCase();
+          final enableError = enableResult.stderr.toLowerCase();
 
-          final verifyResult =
-              await sshClient.executeCommand(connection, rule.isEnabledCommand);
-          final verifyState = verifyResult.stdout.trim().toLowerCase();
-
-          session.log(
-              'Verification check: exitCode=${verifyResult.exitCode}, stdout="${verifyState}"',
-              level: LogLevel.debug);
-
-          // If service is actually enabled, then the enable operation was successful
-          if (verifyState == 'enabled' ||
-              verifyState == 'static' ||
-              verifyState == 'enabled-runtime') {
-            isEnableSuccess = true;
-            session.log(
-                'Verification confirms ${rule.systemdServiceName} is enabled (${verifyState})',
-                level: LogLevel.debug);
-          }
+          isEnableSuccess = enableError.contains('already enabled') ||
+              enableError.contains('unit files have no installation config') ||
+              enableError
+                  .contains('the unit files have no installation config') ||
+              enableError.contains('static unit') ||
+              enableError.contains('masked') ||
+              enableOutput.contains('created symlink') ||
+              enableOutput.contains('already enabled') ||
+              enableOutput.contains('symlink already exists');
         }
 
-        if (isEnableSuccess) {
-          session.log('Successfully enabled ${rule.systemdServiceName}',
+        // Always verify the actual enable state after enable attempt
+        // This ensures accurate reporting regardless of exit codes or text parsing
+        final verifyResult =
+            await sshClient.executeCommand(connection, rule.isEnabledCommand);
+        final verifyState = verifyResult.stdout.trim().toLowerCase();
+
+        session.log(
+            'Enable verification: state="${verifyState}", enable_exit=${enableResult.exitCode}',
+            level: LogLevel.debug);
+
+        // Final determination based on actual enabled state
+        final isActuallyEnabled = verifyState == 'enabled' ||
+            verifyState == 'static' ||
+            verifyState == 'enabled-runtime';
+
+        if (isActuallyEnabled) {
+          session.log(
+              'Service ${rule.systemdServiceName} is now enabled (${verifyState})',
               level: LogLevel.info);
           LogBroadcaster.broadcastLog(
               '✅ Service enabled: ${rule.systemdServiceName} on ${connection.host}');
         } else {
           session.log(
-              'Failed to enable ${rule.systemdServiceName}: exitCode=${enableResult.exitCode}, stderr="${enableResult.stderr.trim()}", stdout="${enableResult.stdout.trim()}"',
+              'Service ${rule.systemdServiceName} is still disabled after enable attempt: state="${verifyState}", exitCode=${enableResult.exitCode}',
               level: LogLevel.warning);
           LogBroadcaster.broadcastLog(
-              '❌ Failed to enable service: ${rule.systemdServiceName} on ${connection.host} (exit ${enableResult.exitCode})');
+              '❌ Service remains disabled: ${rule.systemdServiceName} on ${connection.host} (state: ${verifyState})');
           // Continue with restart attempt even if enable failed
         }
       } else {
@@ -404,11 +402,11 @@ class LinuxServiceRestartService {
   }
 
   /// Check if restart is allowed based on simple counter limit
-  bool _canRestart(RestartRule rule, String restartKey) {
+  bool _canRestart(SshConnection connection, String restartKey) {
     final history = _restartHistory[restartKey] ?? [];
 
     // Simple counter check - compare against maxRestarts limit
-    return history.length < rule.maxRestarts;
+    return history.length < connection.maxRestarts;
   }
 
   /// Record a restart attempt
@@ -425,7 +423,8 @@ class LinuxServiceRestartService {
 
   /// Reset restart counter when Icinga state changes from CRITICAL to OK
   void resetRestartCounter(String host, String serviceName) {
-    final restartKey = '${host}:${serviceName}';  // Fixed: Use colon like in restartService
+    final restartKey =
+        '${host}:${serviceName}'; // Fixed: Use colon like in restartService
     _restartHistory.remove(restartKey);
     _lastRestartAttempt.remove(restartKey);
 

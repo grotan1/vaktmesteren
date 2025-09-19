@@ -8,6 +8,10 @@ class SshConnection {
   final Duration timeout;
   final String name; // Friendly name for logging
 
+  // Restart settings moved from RestartRule to SshConnection
+  final int maxRestarts;
+  final Duration timeBetweenRestartAttempts;
+
   const SshConnection({
     required this.host,
     this.port = 22,
@@ -16,6 +20,9 @@ class SshConnection {
     this.password,
     this.timeout = const Duration(seconds: 30),
     required this.name,
+    this.maxRestarts = 3, // Default: 3 restart attempts
+    this.timeBetweenRestartAttempts =
+        const Duration(minutes: 10), // Default: 10 minutes
   });
 
   factory SshConnection.fromMap(String name, Map<String, dynamic> map) {
@@ -29,6 +36,10 @@ class SshConnection {
       timeout: Duration(
         seconds: map['timeoutSeconds'] as int? ?? 30,
       ),
+      maxRestarts: map['maxRestarts'] as int? ?? 3,
+      timeBetweenRestartAttempts: Duration(
+        minutes: map['timeBetweenRestartAttempts'] as int? ?? 10,
+      ),
     );
   }
 
@@ -40,6 +51,8 @@ class SshConnection {
       'privateKeyPath': privateKeyPath,
       'password': password,
       'timeoutSeconds': timeout.inSeconds,
+      'maxRestarts': maxRestarts,
+      'timeBetweenRestartAttempts': timeBetweenRestartAttempts.inMinutes,
     };
   }
 
@@ -60,8 +73,11 @@ class SshConnection {
           host == other.host &&
           port == other.port &&
           username == other.username &&
-          name == other.name;
+          name == other.name &&
+          maxRestarts == other.maxRestarts &&
+          timeBetweenRestartAttempts == other.timeBetweenRestartAttempts;
 
   @override
-  int get hashCode => Object.hash(host, port, username, name);
+  int get hashCode => Object.hash(
+      host, port, username, name, maxRestarts, timeBetweenRestartAttempts);
 }

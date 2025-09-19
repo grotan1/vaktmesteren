@@ -7,6 +7,8 @@
 # 3. systemd_unit_unit Auto-detection: Service names automatically extracted from Icinga2 variables
 # 4. DEFAULT RESTART BEHAVIOR: All services with systemd_unit_unit get automatic restart capability
 # 5. Rule-based Override: Explicit rules provide fine-grained control for critical services
+# 6. Enhanced Enable Detection: Automatically enables disabled services before restart
+# 7. Automatic Retry Scheduling: Schedules retries after cooldown periods expire
 
 # Global settings
 enabled: true
@@ -17,12 +19,14 @@ logOnly: false  # Set to false to enable real SSH execution (use with caution!)
 connections:
   # Host-based connection mapping - connection name matches hostname from Icinga2
   # This allows automatic connection selection when using sshConnectionName: "auto"
-#  ghrunner.grsoft.no:
-#    host: "ghrunner.grsoft.no"
-#    port: 22
-#    username: "root"
-#    privateKeyPath: "/home/grotan/.ssh/id_ed25519"
-#    timeoutSeconds: 30
+  ghrunner.grsoft.no:
+    host: "ghrunner.grsoft.no"
+    port: 22
+    username: "root"
+    privateKeyPath: "/home/grotan/.ssh/id_ed25519"
+    timeoutSeconds: 30
+    maxRestarts: 2                         # Allow 2 restart attempts (resets when state changes from CRITICAL to OK)
+    timeBetweenRestartAttempts: 15         # Wait 15 minutes between restart attempts
 
   web-prod-01.example.com:
     host: "web-prod-01.example.com"
@@ -30,6 +34,8 @@ connections:
     username: "monitoring"
     privateKeyPath: "/etc/ssh/monitoring_key"
     timeoutSeconds: 30
+    maxRestarts: 3                         # Allow 3 restart attempts (web services restart quickly)
+    timeBetweenRestartAttempts: 10         # Wait 10 minutes between restart attempts
 
   db.example.com:
     host: "db.example.com"
@@ -37,6 +43,8 @@ connections:
     username: "monitoring"
     privateKeyPath: "/etc/ssh/monitoring_key"
     timeoutSeconds: 30
+    maxRestarts: 1                         # Very conservative for database
+    timeBetweenRestartAttempts: 30         # Long wait for databases (stateful services need time)
 
   # Default connection template for automatic dynamic connections
   # When using sshConnectionName: "auto" and no specific connection is found for a hostname,
@@ -47,104 +55,60 @@ connections:
     username: "root"
     privateKeyPath: "/home/grotan/.ssh/id_ed25519"
     timeoutSeconds: 30
+    maxRestarts: 3                         # Default: 3 restart attempts
+    timeBetweenRestartAttempts: 10         # Default: 10 minutes between attempts
 
 # Restart rules - explicit configuration for services requiring special treatment
 # 
 # RULE BEHAVIOR:
-# - Services WITH explicit rules: Use configured settings (maxRestarts, cooldownMinutes, pre/post checks)
+# - Services WITH explicit rules: Use configured settings (maxRestarts, cooldownMinutes)
 # - Services WITHOUT explicit rules: Use conservative default behavior (3 attempts, 10min cooldown, basic check)
 # 
 # All services detected via systemd_unit_unit will be automatically restartable.
 # Only configure explicit rules for services that need special treatment (databases, critical services, etc.)
 # 
-# NOTE: maxRestarts counter resets to 0 whenever Icinga2 state changes from CRITICAL back to OK
-rules:
-  # EXAMPLE RULES - These demonstrate explicit configuration for services requiring special treatment
-  # Most services will use default behavior (2/hour, 10min cooldown, basic check)
-  # Only add explicit rules for services that need custom settings
-  
-  # Auto-detected service from systemd_unit_unit variable
-  #- systemdServiceName: "ser2net"          # Matches systemd_unit_unit: "ser2net" from Icinga2
-  #  enabled: true                          # Host: ghrunner.grsoft.no -> Connection: "ghrunner.grsoft.no"
-  #  maxRestarts: 2                         # Allow 2 restart attempts (resets when state changes from CRITICAL to OK)
-  #  cooldownMinutes: 15                    # Cooldown window (minutes) between restart attempts for this service.
-                                          # Meaning:
-                                          # - After a restart attempt is performed, the system will wait
-                                          #   at least this many minutes before attempting another restart
-                                          #   for the same service on the same host.
-                                          # - The `maxRestarts` counter counts attempts inside a higher-level
-                                          #   incident window (resets when Icinga2 state returns to OK).
-                                          # - Example: With `maxRestarts: 2` and `cooldownMinutes: 15`,
-                                          #   the service will be restarted up to 2 times; if the first
-                                          #   attempt happens at 10:00 and fails, the next attempt will
-                                          #   not be scheduled before 10:15.
-                                          # - Use larger values for hardware or stateful services to avoid
-                                          #   rapid repeat restarts (which can cause instability).
-  #  preChecks:                             # Commands to run before restart
-  #    - "sudo systemctl is-failed ser2net || true"  # Check if service is failed
-  #    - "sudo ss -ln | grep :2000 || true"     # Check if port is still bound
-  #  postChecks:                            # Commands to run after restart
-  #    - "sudo systemctl is-active ser2net" # Verify service is running
-  #    - "sleep 3 && sudo ss -ln | grep :2000"  # Verify port is listening
-
-  # Auto-detected nginx service
-  - systemdServiceName: "nginx"             # Matches systemd_unit_unit: "nginx" from Icinga2
-    enabled: true                           # Host: web-prod-01.example.com -> Connection: "web-prod-01.example.com"
-    maxRestarts: 3                          # Allow 3 restart attempts (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 10                     # Cooldown window (minutes) between restart attempts for this service.
-                                          # Shorter duration here because web-services restart quickly
-                                          # and are less likely to require long recovery times.
-    preChecks:                              # Commands to run before restart
-      - "sudo nginx -t"                     # Test nginx config
-    postChecks:                             # Commands to run after restart
-      - "sudo systemctl is-active nginx"    # Verify service is running
-
-  # Auto-detected PostgreSQL service
-  - systemdServiceName: "postgresql"       # Matches systemd_unit_unit: "postgresql" from Icinga2
-    enabled: true
-    maxRestarts: 1                         # Very conservative for database (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 30                    # Long cooldown (minutes) between restart attempts.
-                                          # Databases are stateful—use a long cooldown to allow recovery
-                                          # and prevent repeated restarts that may cause corruption.
-    preChecks:
-      - "sudo systemctl is-failed postgresql || true"
-      - "sudo -u postgres psql -c 'SELECT 1;' || true"  # Test database connectivity
-    postChecks:
-      - "sudo systemctl is-active postgresql"
-      - "sleep 5 && sudo -u postgres psql -c 'SELECT version();'"
-
-# HOW IT WORKS (AUTO-DETECTION WITH DEFAULT BEHAVIOR):
+# RESTART PROCESS:
+# 1. Check if service is enabled, enable if disabled
+# 2. Execute systemctl restart command
+# 3. Verify service is active after restart
+# 4. Reset restart counter when service recovers (CRITICAL → OK)
+# 5. Schedule automatic retry if cooldown prevents immediate restart
 # 
-# 1. SERVICE WITH EXPLICIT RULE:
-#    - Define connection: "ghrunner.grsoft.no" (connection name = hostname)
-#    - Rule has: systemdServiceName: "ser2net" (with custom settings)
+# NOTE: maxRestarts counter resets to 0 whenever Icinga2 state changes from CRITICAL back to OK
+# Service restart mappings - REMOVED!
+# No longer needed! The system automatically selects SSH connections based on hostname:
+# 1. Connection name matches hostname (e.g., connection "ghrunner.grsoft.no" for host "ghrunner.grsoft.no")
+# 2. Connection host property matches hostname
+# 3. Falls back to "default" connection template if no match found
+#
+# This eliminates the need for explicit service-to-connection mappings!
+
+# HOW IT WORKS (SIMPLIFIED AUTOMATIC RESTART BEHAVIOR):
+# 
+# 1. RESTART SETTINGS AT CONNECTION LEVEL:
+#    - All restart settings (maxRestarts, timeBetweenRestartAttempts) are configured per connection
+#    - This simplifies configuration since all services on a host share the same restart behavior
+#    - Example: ghrunner.grsoft.no has maxRestarts: 2, timeBetweenRestartAttempts: 15 minutes
+#
+# 2. AUTOMATIC CONNECTION SELECTION (no manual mapping needed!):
 #    - Icinga2 sends: Host: "ghrunner.grsoft.no", systemd_unit_unit: "ser2net"
-#    - Result: Uses explicit rule settings (2 attempts, 15min cooldown, custom pre/post checks)
+#    - System automatically finds connection "ghrunner.grsoft.no" (name matches hostname)
+#    - OR finds connection with host="ghrunner.grsoft.no" (host property matches)
+#    - Falls back to "default" connection template with actual hostname if no match found
 #
-# 2. SERVICE WITHOUT EXPLICIT RULE (DEFAULT BEHAVIOR):
-#    - No rule defined for service
-#    - Icinga2 sends: Host: "server.example.com", systemd_unit_unit: "unknown-service"
-#    - Result: Uses conservative defaults (3 attempts, 10min cooldown, basic post-check only)
-#    - Connection: Auto-selected by hostname or created dynamically
-#
-# 3. DYNAMIC CONNECTION CREATION:
-#    - Icinga2 sends: Host: "new-server.example.com", systemd_unit_unit: "any-service"
-#    - No connection found for "new-server.example.com"
-#    - System creates: Connection using "default" template + actual hostname
-#    - Result: SSH to monitoring@new-server.example.com:22 with /etc/ssh/monitoring_key
-#
-# 4. DEFAULT RESTART BEHAVIOR SUMMARY:
+# 3. SIMPLIFIED RESTART BEHAVIOR:
 #    - ALL services with systemd_unit_unit are automatically restartable
-#    - Services WITHOUT explicit rules get conservative defaults:
-#      * Max restarts: 3 attempts (resets when Icinga state changes from CRITICAL to OK)
-#      * Cooldown: 10 minutes
-#      * Pre-checks: None
-#      * Post-checks: sudo systemctl is-active servicename
-#    - Services WITH explicit rules use their configured settings
-#    - No configuration required for basic restart capability
+#    - Restart limits and timing determined by connection settings
+#    - Automatic enable checking before restart
+#    - Verification using systemctl is-active after restart
+#    - Auto-retry scheduling when cooldown prevents immediate restart
+#    - Restart counters reset when service recovers (CRITICAL → OK)
 #
-# AUTOMATIC CONNECTION SELECTION (DEFAULT BEHAVIOR):
-#    1. Look for connection named exactly like the Icinga2 hostname  
-#    2. Look for connection where host field matches Icinga2 hostname exactly
-#    3. Use "default" connection as template + actual Icinga2 hostname
-#    4. Create dynamic connection with standard defaults + actual Icinga2 hostname
+# RESTART PROCESS FLOW:
+#    1. Service goes CRITICAL → Alert received
+#    2. Find connection (via mapping or auto-detection)
+#    3. Check connection's restart limits and cooldown → Schedule retry if needed
+#    4. Check if service is enabled → Enable if disabled
+#    5. Execute restart command → Log results
+#    6. Verify service is active → Report success/failure
+#    7. Service recovers → Reset restart counter automatically

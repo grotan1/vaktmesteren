@@ -731,101 +731,24 @@ class Icinga2AlertService {
   Future<void> _executeAutomaticRestart(String systemdUnitName, String host,
       String icingaServiceName, String canonicalKey) async {
     try {
-      // First, try to find an existing restart rule for this systemd service
-      final existingRule =
-          _sshConfig!.findRuleBySystemdService(systemdUnitName);
-
-      if (existingRule != null) {
-        session.log(
-            'Found existing restart rule for systemd service: $systemdUnitName',
-            level: LogLevel.info);
-        LogBroadcaster.broadcastLog(
-            '🎯 Using configured rule for auto-detected service: $systemdUnitName');
-
-        // Get the SSH connection for this rule
-        SshConnection? connection;
-
-        if (existingRule.sshConnectionName == "auto") {
-          // Use host-based connection lookup for "auto" rules
-          connection = _sshConfig!.getConnectionByHost(host);
-          if (connection != null) {
-            session.log(
-                'Rule uses auto connection, found SSH connection for host "$host": ${connection.name}',
-                level: LogLevel.info);
-            LogBroadcaster.broadcastLog(
-                '🎯 Rule auto-selected SSH connection for host "$host": ${connection.name}');
-          }
-        } else {
-          // Use specified connection name
-          connection =
-              _sshConfig!.getConnection(existingRule.sshConnectionName);
-        }
-
-        if (connection == null) {
-          final connectionRef = existingRule.sshConnectionName == "auto"
-              ? 'auto-detected connection for host "$host"'
-              : 'SSH connection "${existingRule.sshConnectionName}"';
-          session.log('$connectionRef not found for auto-detected service rule',
-              level: LogLevel.error);
-          LogBroadcaster.broadcastLog(
-              '❌ $connectionRef not configured for auto-detected service');
-          return;
-        }
-
-        // Log the restart attempt with rule details
-        LogBroadcaster.broadcastLog(
-            '🔄 Rule-based automatic restart: $systemdUnitName on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
-        LogBroadcaster.broadcastLog(
-            '⚙️ Rule settings: max ${existingRule.maxRestarts} attempts, ${existingRule.cooldownPeriod.inMinutes}min cooldown');
-
-        // Execute the restart using the existing rule
-        final result = await _restartService!
-            .restartService(existingRule, connection, icingaServiceName);
-
-        if (result.success) {
-          session.log(
-              'Rule-based automatic restart ${result.wasSimulated ? 'simulation ' : ''}successful: ${result.message}',
-              level: LogLevel.info);
-          LogBroadcaster.broadcastLog(
-              '✅ Rule-based automatic restart successful: $systemdUnitName');
-        } else {
-          session.log(
-              'Rule-based automatic restart ${result.wasSimulated ? 'simulation ' : ''}failed: ${result.message}',
-              level: LogLevel.warning);
-          LogBroadcaster.broadcastLog(
-              '❌ Rule-based automatic restart failed: ${result.message}');
-        }
-        return;
-      }
-
-      // No restart rule found for this systemd service - use default restart behavior
+      // Use the new simplified connection-based approach
       session.log(
-          'No specific restart rule found for systemd service: $systemdUnitName, applying default restart behavior',
+          'Executing connection-based automatic restart for systemd service: $systemdUnitName on host: $host',
           level: LogLevel.info);
       LogBroadcaster.broadcastLog(
-          '🔧 No specific rule found for auto-detected service: $systemdUnitName, using default restart behavior');
-      LogBroadcaster.broadcastLog(
-          '💡 Default restart behavior: Service will be restarted with conservative settings');
+          '🔄 Connection-based automatic restart: $systemdUnitName on $host');
 
-      // For automatic detection without specific rules, determine which SSH connection to use
-      SshConnection? connection;
+      // Get the appropriate SSH connection for this service
+      SshConnection? connection =
+          _sshConfig!.getConnectionForService(systemdUnitName, host);
 
-      // First try to find connection by hostname (from Icinga2 host_name)
-      connection = _sshConfig!.getConnectionByHost(host);
-      if (connection != null) {
-        session.log('Found SSH connection for host "$host": ${connection.name}',
-            level: LogLevel.info);
-        LogBroadcaster.broadcastLog(
-            '🎯 Auto-selected SSH connection for host "$host": ${connection.name}');
-      }
-
-      // If no host-based connection found, try to get the default connection
+      // If no connection found, try to create a dynamic one
       if (connection == null) {
         final defaultConnection = _sshConfig!.getConnection('default');
         if (defaultConnection != null) {
           // Use default connection as a template but with the actual target hostname
           session.log(
-              'No connection found for host "$host", creating connection using default template',
+              'No connection found for service "$systemdUnitName" on host "$host", creating connection using default template',
               level: LogLevel.info);
           LogBroadcaster.broadcastLog(
               '🔧 Creating SSH connection for host "$host" using default template');
@@ -838,6 +761,9 @@ class Icinga2AlertService {
             privateKeyPath: defaultConnection.privateKeyPath,
             password: defaultConnection.password,
             timeout: defaultConnection.timeout,
+            maxRestarts: defaultConnection.maxRestarts,
+            timeBetweenRestartAttempts:
+                defaultConnection.timeBetweenRestartAttempts,
           );
         } else {
           // If no default connection defined, create a dynamic connection using standard defaults
@@ -856,48 +782,47 @@ class Icinga2AlertService {
             username: 'monitoring', // Standard monitoring username
             privateKeyPath: '/etc/ssh/monitoring_key', // Standard key path
             timeout: const Duration(seconds: 30),
+            maxRestarts: 3, // Default: 3 restart attempts
+            timeBetweenRestartAttempts:
+                const Duration(minutes: 10), // Default: 10 minutes
           );
         }
       }
 
-      // Connection should now be available (either found or dynamically created)
-      // This ensures we always have a connection for automatic restart
+      // Log the restart attempt with connection details
+      LogBroadcaster.broadcastLog(
+          '🔄 Automatic restart: $systemdUnitName on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
+      LogBroadcaster.broadcastLog(
+          '⚙️ Connection settings: max ${connection.maxRestarts} attempts, ${connection.timeBetweenRestartAttempts.inMinutes}min between attempts');
 
-      // Create a default restart rule for the automatic detection (with sensible default settings)
-      final defaultRule = RestartRule(
+      // Create a simplified restart rule using the connection's settings
+      final restartRule = RestartRule(
         systemdServiceName: systemdUnitName,
-        // Use conservative default settings for auto-detected services without specific rules
         enabled: true,
-        maxRestarts: 3, // Conservative default (resets when state changes)
-        cooldownPeriod: const Duration(minutes: 10), // Conservative cooldown
-        preChecks: [], // No pre-checks by default
+        maxRestarts: connection.maxRestarts,
+        cooldownPeriod: connection.timeBetweenRestartAttempts,
+        preChecks: [], // No pre-checks for simplified approach
         postChecks: [
           'sudo systemctl is-active $systemdUnitName'
         ], // Basic post-check
       );
 
-      // Log the restart attempt
-      LogBroadcaster.broadcastLog(
-          '🔄 Default automatic restart: $systemdUnitName on ${connection.host} (${_sshConfig!.logOnly ? 'SIMULATION' : 'LIVE'})');
-      LogBroadcaster.broadcastLog(
-          '⚙️ Default settings: max 3 attempts, 10min cooldown, basic post-check only');
-
-      // Execute the restart using the default rule
+      // Execute the restart using the connection's settings
       final result = await _restartService!
-          .restartService(defaultRule, connection, icingaServiceName);
+          .restartService(restartRule, connection, icingaServiceName);
 
       if (result.success) {
         session.log(
-            'Default automatic service restart ${result.wasSimulated ? 'simulation ' : ''}successful: ${result.message}',
+            'Connection-based automatic restart ${result.wasSimulated ? 'simulation ' : ''}successful: ${result.message}',
             level: LogLevel.info);
         LogBroadcaster.broadcastLog(
-            '✅ Default automatic restart successful: $systemdUnitName');
+            '✅ Connection-based automatic restart successful: $systemdUnitName');
       } else {
         session.log(
-            'Default automatic service restart ${result.wasSimulated ? 'simulation ' : ''}failed: ${result.message}',
+            'Connection-based automatic restart ${result.wasSimulated ? 'simulation ' : ''}failed: ${result.message}',
             level: LogLevel.warning);
         LogBroadcaster.broadcastLog(
-            '❌ Default automatic restart failed: ${result.message}');
+            '❌ Connection-based automatic restart failed: ${result.message}');
       }
       return;
     } catch (e) {
