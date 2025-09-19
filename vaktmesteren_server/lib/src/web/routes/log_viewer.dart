@@ -98,11 +98,8 @@ class LogBroadcaster {
   /// This will create the persistence table if missing and load the most
   /// recent non-transient log messages into the in-memory buffer.
   static Future<void> init(Serverpod pod) async {
-    // Persisted storage will be wired up using Serverpod's ORM once the
-    // `PersistedAlertState`/`WebLog` models are generated via
-    // `serverpod generate` and migrations have been applied. Until then,
-    // keep the in-memory recent buffer active and skip direct SQL.
-    // TODO: Load persisted logs using generated ORM here.
+    // Alert history already provides persistent log data and is loaded
+    // separately in the route handlers. No additional log persistence needed.
   }
 
   static void broadcastLog(String message) {

@@ -67,7 +67,19 @@ rules:
   - systemdServiceName: "ser2net"          # Matches systemd_unit_unit: "ser2net" from Icinga2
     enabled: true                          # Host: ghrunner.grsoft.no -> Connection: "ghrunner.grsoft.no"
     maxRestarts: 2                         # Allow 2 restart attempts (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 15                    # Longer cooldown for hardware services
+    cooldownMinutes: 15                    # Cooldown window (minutes) between restart attempts for this service.
+                                          # Meaning:
+                                          # - After a restart attempt is performed, the system will wait
+                                          #   at least this many minutes before attempting another restart
+                                          #   for the same service on the same host.
+                                          # - The `maxRestarts` counter counts attempts inside a higher-level
+                                          #   incident window (resets when Icinga2 state returns to OK).
+                                          # - Example: With `maxRestarts: 2` and `cooldownMinutes: 15`,
+                                          #   the service will be restarted up to 2 times; if the first
+                                          #   attempt happens at 10:00 and fails, the next attempt will
+                                          #   not be scheduled before 10:15.
+                                          # - Use larger values for hardware or stateful services to avoid
+                                          #   rapid repeat restarts (which can cause instability).
     preChecks:                             # Commands to run before restart
       - "sudo systemctl is-failed ser2net || true"  # Check if service is failed
       - "sudo netstat -ln | grep :2000 || true"     # Check if port is still bound
@@ -79,7 +91,9 @@ rules:
   - systemdServiceName: "nginx"             # Matches systemd_unit_unit: "nginx" from Icinga2
     enabled: true                           # Host: web-prod-01.example.com -> Connection: "web-prod-01.example.com"
     maxRestarts: 3                          # Allow 3 restart attempts (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 10                     # Wait 10 minutes between restarts
+    cooldownMinutes: 10                     # Cooldown window (minutes) between restart attempts for this service.
+                                          # Shorter duration here because web-services restart quickly
+                                          # and are less likely to require long recovery times.
     preChecks:                              # Commands to run before restart
       - "sudo nginx -t"                     # Test nginx config
     postChecks:                             # Commands to run after restart
@@ -89,7 +103,9 @@ rules:
   - systemdServiceName: "postgresql"       # Matches systemd_unit_unit: "postgresql" from Icinga2
     enabled: true
     maxRestarts: 1                         # Very conservative for database (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 30                    # Long cooldown for database services
+    cooldownMinutes: 30                    # Long cooldown (minutes) between restart attempts.
+                                          # Databases are stateful—use a long cooldown to allow recovery
+                                          # and prevent repeated restarts that may cause corruption.
     preChecks:
       - "sudo systemctl is-failed postgresql || true"
       - "sudo -u postgres psql -c 'SELECT 1;' || true"  # Test database connectivity

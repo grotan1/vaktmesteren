@@ -107,7 +107,7 @@ class SshConnectionPool {
         onPasswordRequest:
             connection.password != null ? () => connection.password! : null,
         identities: connection.privateKeyPath != null
-            ? await SSHKeyPair.fromPem(
+            ? SSHKeyPair.fromPem(
                 await File(connection.privateKeyPath!).readAsString())
             : null,
       );
