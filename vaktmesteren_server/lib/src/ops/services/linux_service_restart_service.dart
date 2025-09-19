@@ -425,7 +425,7 @@ class LinuxServiceRestartService {
 
   /// Reset restart counter when Icinga state changes from CRITICAL to OK
   void resetRestartCounter(String host, String serviceName) {
-    final restartKey = '${host}_$serviceName';
+    final restartKey = '${host}:${serviceName}';  // Fixed: Use colon like in restartService
     _restartHistory.remove(restartKey);
     _lastRestartAttempt.remove(restartKey);
 
