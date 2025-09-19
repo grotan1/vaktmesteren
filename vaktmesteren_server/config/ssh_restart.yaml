@@ -10,19 +10,19 @@
 
 # Global settings
 enabled: true
-logOnly: true  # Set to false to enable real SSH execution (use with caution!)
+logOnly: false  # Set to false to enable real SSH execution (use with caution!)
 
 # SSH Connection definitions
 # Host-based connection mapping: connection name matches hostname for automatic selection
 connections:
   # Host-based connection mapping - connection name matches hostname from Icinga2
   # This allows automatic connection selection when using sshConnectionName: "auto"
-  ghrunner.grsoft.no:
-    host: "ghrunner.grsoft.no"
-    port: 22
-    username: "monitoring"
-    privateKeyPath: "/etc/ssh/monitoring_key"
-    timeoutSeconds: 30
+#  ghrunner.grsoft.no:
+#    host: "ghrunner.grsoft.no"
+#    port: 22
+#    username: "root"
+#    privateKeyPath: "/home/grotan/.ssh/id_ed25519"
+#    timeoutSeconds: 30
 
   web-prod-01.example.com:
     host: "web-prod-01.example.com"
@@ -44,8 +44,8 @@ connections:
   default:
     host: "template-will-use-icinga2-hostname"  # Gets replaced with actual hostname
     port: 22
-    username: "monitoring"
-    privateKeyPath: "/etc/ssh/monitoring_key"
+    username: "root"
+    privateKeyPath: "/home/grotan/.ssh/id_ed25519"
     timeoutSeconds: 30
 
 # Restart rules - explicit configuration for services requiring special treatment
@@ -64,10 +64,10 @@ rules:
   # Only add explicit rules for services that need custom settings
   
   # Auto-detected service from systemd_unit_unit variable
-  - systemdServiceName: "ser2net"          # Matches systemd_unit_unit: "ser2net" from Icinga2
-    enabled: true                          # Host: ghrunner.grsoft.no -> Connection: "ghrunner.grsoft.no"
-    maxRestarts: 2                         # Allow 2 restart attempts (resets when state changes from CRITICAL to OK)
-    cooldownMinutes: 15                    # Cooldown window (minutes) between restart attempts for this service.
+  #- systemdServiceName: "ser2net"          # Matches systemd_unit_unit: "ser2net" from Icinga2
+  #  enabled: true                          # Host: ghrunner.grsoft.no -> Connection: "ghrunner.grsoft.no"
+  #  maxRestarts: 2                         # Allow 2 restart attempts (resets when state changes from CRITICAL to OK)
+  #  cooldownMinutes: 15                    # Cooldown window (minutes) between restart attempts for this service.
                                           # Meaning:
                                           # - After a restart attempt is performed, the system will wait
                                           #   at least this many minutes before attempting another restart
@@ -80,12 +80,12 @@ rules:
                                           #   not be scheduled before 10:15.
                                           # - Use larger values for hardware or stateful services to avoid
                                           #   rapid repeat restarts (which can cause instability).
-    preChecks:                             # Commands to run before restart
-      - "sudo systemctl is-failed ser2net || true"  # Check if service is failed
-      - "sudo netstat -ln | grep :2000 || true"     # Check if port is still bound
-    postChecks:                            # Commands to run after restart
-      - "sudo systemctl is-active ser2net" # Verify service is running
-      - "sleep 3 && sudo netstat -ln | grep :2000"  # Verify port is listening
+  #  preChecks:                             # Commands to run before restart
+  #    - "sudo systemctl is-failed ser2net || true"  # Check if service is failed
+  #    - "sudo ss -ln | grep :2000 || true"     # Check if port is still bound
+  #  postChecks:                            # Commands to run after restart
+  #    - "sudo systemctl is-active ser2net" # Verify service is running
+  #    - "sleep 3 && sudo ss -ln | grep :2000"  # Verify port is listening
 
   # Auto-detected nginx service
   - systemdServiceName: "nginx"             # Matches systemd_unit_unit: "nginx" from Icinga2

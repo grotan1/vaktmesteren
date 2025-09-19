@@ -272,9 +272,11 @@
                 const div = document.createElement('div');
                 div.className = 'log-entry';
                 const mu = (message || '').toUpperCase();
-                if (mu.indexOf('CRITICAL') !== -1) div.classList.add('critical');
+                // Check for RECOVERY first since it's more specific and critical transitions 
+                // might contain the word "critical" in the state names
+                if (mu.indexOf('RECOVERY') !== -1) div.classList.add('recovery');
+                else if (mu.indexOf('CRITICAL') !== -1) div.classList.add('critical');
                 else if (mu.indexOf('WARNING') !== -1) div.classList.add('warning');
-                else if (mu.indexOf('RECOVERY') !== -1) div.classList.add('recovery');
                 if (skipTimestamp) {
                     div.textContent = message;
                 } else {

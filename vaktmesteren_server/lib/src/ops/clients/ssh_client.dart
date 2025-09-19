@@ -39,6 +39,8 @@ class SshClient {
   final Map<String, int> _commandCounter = {};
   final Map<String, DateTime> _lastCommandTime = {};
   final Map<String, List<Duration>> _commandTimings = {};
+  final Set<String> _enabledServices =
+      {}; // Track enabled services for simulation
 
   SshClient(
     this.session, {
@@ -335,6 +337,65 @@ class SshClient {
         duration: duration,
         wasSimulated: true,
       );
+    } else if (command.contains('systemctl is-active')) {
+      // Simulate service being active after restart
+      return SshResult(
+        exitCode: 0,
+        stdout: 'active',
+        stderr: '',
+        duration: duration,
+        wasSimulated: true,
+      );
+    } else if (command.contains('systemctl is-enabled')) {
+      // Simulate checking if service is enabled
+      // For testing purposes, let's simulate some services as disabled initially
+      final serviceName = _extractServiceName(command);
+      final isInitiallyDisabled =
+          serviceName.contains('test') || serviceName.contains('ser2net');
+
+      if (isInitiallyDisabled && !_enabledServices.contains(serviceName)) {
+        return SshResult(
+          exitCode: 1, // systemctl is-enabled returns 1 for disabled services
+          stdout: 'disabled',
+          stderr: '',
+          duration: duration,
+          wasSimulated: true,
+        );
+      } else {
+        return SshResult(
+          exitCode: 0,
+          stdout: 'enabled',
+          stderr: '',
+          duration: duration,
+          wasSimulated: true,
+        );
+      }
+    } else if (command.contains('systemctl enable')) {
+      // Simulate enabling a service
+      final serviceName = _extractServiceName(command);
+
+      // If service was already enabled, simulate "already enabled" scenario
+      if (_enabledServices.contains(serviceName)) {
+        return SshResult(
+          exitCode: 1, // systemctl enable returns 1 if already enabled
+          stdout: '',
+          stderr:
+              'The unit files have no installation config (unit file is masked, already enabled, or a static unit file).',
+          duration: duration,
+          wasSimulated: true,
+        );
+      } else {
+        _enabledServices
+            .add(serviceName); // Track enabled services for simulation
+        return SshResult(
+          exitCode: 0,
+          stdout:
+              'Created symlink /etc/systemd/system/multi-user.target.wants/$serviceName.service → /etc/systemd/system/$serviceName.service.',
+          stderr: '',
+          duration: duration,
+          wasSimulated: true,
+        );
+      }
     } else if (command.contains('systemctl status')) {
       final serviceName = _extractServiceName(command);
       return SshResult(

@@ -580,8 +580,11 @@ class Icinga2AlertService {
 
     session.log('State transition: $canonicalKey from $fromState to $toState',
         level: LogLevel.info);
-    LogBroadcaster.broadcastLog(
-        '🔄 State transition: $canonicalKey ($fromState → $toState)');
+
+    // Broadcast state transition with appropriate styling based on transition type
+    final transitionMessage =
+        _getStateTransitionMessage(canonicalKey, fromState, toState);
+    LogBroadcaster.broadcastLog(transitionMessage);
 
     // Determine if we should send an alert
     if (fromState == AlertState.ok && toState == AlertState.alertingCritical) {
@@ -1253,6 +1256,23 @@ class Icinga2AlertService {
     } catch (e) {
       session.log('Error checking initial service states: $e',
           level: LogLevel.error);
+    }
+  }
+
+  /// Get formatted state transition message with appropriate keywords for styling
+  String _getStateTransitionMessage(
+      String canonicalKey, AlertState fromState, AlertState toState) {
+    // Add keywords that the log viewer CSS will pick up for styling
+    if (fromState == AlertState.alertingCritical && toState == AlertState.ok) {
+      // Recovery transition - should get green styling
+      return '🔄 RECOVERY State transition: $canonicalKey ($fromState → $toState)';
+    } else if (fromState == AlertState.ok &&
+        toState == AlertState.alertingCritical) {
+      // Critical transition - should get red styling
+      return '🔄 CRITICAL State transition: $canonicalKey ($fromState → $toState)';
+    } else {
+      // Other transitions - default styling
+      return '🔄 State transition: $canonicalKey ($fromState → $toState)';
     }
   }
 }

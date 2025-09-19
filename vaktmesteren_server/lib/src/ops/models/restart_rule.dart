@@ -72,8 +72,18 @@ class RestartRule {
   /// Get the systemctl restart command
   String get restartCommand => 'sudo systemctl restart $systemdServiceName';
 
-  /// Get the systemctl status command
+  /// Get the systemctl status command (for detailed status information)
   String get statusCommand => 'sudo systemctl status $systemdServiceName';
+
+  /// Get the systemctl is-active command (for reliable running state check)
+  String get isActiveCommand => 'sudo systemctl is-active $systemdServiceName';
+
+  /// Get the systemctl is-enabled command (to check if service is enabled)
+  String get isEnabledCommand =>
+      'sudo systemctl is-enabled $systemdServiceName';
+
+  /// Get the systemctl enable command (to enable the service)
+  String get enableCommand => 'sudo systemctl enable $systemdServiceName';
 
   @override
   String toString() =>
