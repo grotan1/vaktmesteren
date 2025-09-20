@@ -219,7 +219,9 @@ class LinuxServiceRestartService {
             level: LogLevel.debug);
 
         // Final determination based on actual enabled state
-        final isActuallyEnabled = verifyState == 'enabled' ||
+        // Prioritize successful enable command over verification command issues
+        final isActuallyEnabled = enableResult.isSuccess ||
+            verifyState == 'enabled' ||
             verifyState == 'static' ||
             verifyState == 'enabled-runtime';
 
