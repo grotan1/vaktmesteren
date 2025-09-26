@@ -12,11 +12,9 @@ doc/api/
 config/passwords.yaml
 
 # External service configurations (contain secrets)
-# These files are now in config/external/ and should not be committed with real credentials
-config/external/icinga2.yaml
-config/external/ssh_restart.yaml
-config/external/teams_notifications.yaml
-config/external/portainer_ci_cd.yaml
+# Exclude entire external directory to prevent committing any sensitive configs
+config/external/*
+!config/external/README.md
 
 # Firebase service account key for Firebase auth
 config/firebase_service_account_key.json
