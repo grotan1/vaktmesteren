@@ -1,11 +1,11 @@
 ## Portainer CI/CD credentials example
-# Copy this file to `config/portainer_ci_cd.yaml` and fill in the real values.
-# DO NOT commit `config/portainer_ci_cd.yaml` to version control.
+# Copy this file to `config/external/portainer_ci_cd.yaml` and fill in the real values.
+# DO NOT commit `config/external/portainer_ci_cd.yaml` to version control.
 
 portainer:
-  url: "https://portainer.grsoft.no"
+  url: "https://your-portainer-instance.com"
   endpoint_id: 1
-  token: "ptr_b8R2ztPkF43L8tIkkB7fy19VmSnUH/F/ndZ1T51WHN0="
-  user: "ci_cd"
+  token: "ptr_YOUR_PORTAINER_ACCESS_TOKEN_HERE"
+  user: "your_ci_cd_user"
   internal_token: "YOUR_INTERNAL_TOKEN_HERE"
   

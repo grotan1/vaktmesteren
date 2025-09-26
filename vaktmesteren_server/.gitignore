@@ -11,11 +11,12 @@ doc/api/
 # Passwords file
 config/passwords.yaml
 
-# Icinga2 configuration (contains secrets)
-config/icinga2.yaml
+# External service configurations (contain secrets)
+# These files are now in config/external/ and should not be committed with real credentials
+config/external/icinga2.yaml
+config/external/ssh_restart.yaml
+config/external/teams_notifications.yaml
+config/external/portainer_ci_cd.yaml
 
 # Firebase service account key for Firebase auth
 config/firebase_service_account_key.json
- 
-# Portainer CI/CD credentials (local file)
-config/portainer_ci_cd.yaml
