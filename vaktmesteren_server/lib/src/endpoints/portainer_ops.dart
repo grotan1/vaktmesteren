@@ -13,7 +13,7 @@ class PortainerOpsEndpoint extends Endpoint {
       String? serviceName,
       String? configPath,
       int? endpointId}) async {
-    final cfgPath = configPath ?? 'config/portainer_ci_cd.yaml';
+    final cfgPath = configPath ?? 'config/external/portainer_ci_cd.yaml';
     final cfg = PortainerConfig.fromYamlFile(cfgPath);
     final client = await cfg.createClient();
     final eid = endpointId ?? cfg.endpointId;

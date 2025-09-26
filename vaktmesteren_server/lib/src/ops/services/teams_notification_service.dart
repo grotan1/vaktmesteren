@@ -21,7 +21,7 @@ class TeamsNotificationService {
       // Load configuration
       _config = await TeamsConfigLoader.loadConfig(
         _session,
-        configPath: configPath ?? 'config/teams_notifications.yaml',
+        configPath: configPath ?? 'config/external/teams_notifications.yaml',
       );
 
       if (_config == null || !_config!.enabled) {

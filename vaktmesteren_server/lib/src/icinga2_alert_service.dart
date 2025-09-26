@@ -56,9 +56,10 @@ class Icinga2Config {
   /// Load configuration from YAML file
   static Future<Icinga2Config> loadFromConfig(Session session) async {
     try {
-      final cfgFile = File('config/icinga2.yaml');
+      final cfgFile = File('config/external/icinga2.yaml');
       if (!cfgFile.existsSync()) {
-        throw Exception('Icinga2 config file not found: config/icinga2.yaml');
+        throw Exception(
+            'Icinga2 config file not found: config/external/icinga2.yaml');
       }
 
       final yamlString = await cfgFile.readAsString();

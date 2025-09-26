@@ -47,7 +47,8 @@ class RoutePortainerOpsCheckService extends Route {
       final body = await utf8.decoder.bind(request).join();
       final data = jsonDecode(body) as Map<String, dynamic>;
 
-      final configPath = data['config'] ?? 'config/portainer_ci_cd.yaml';
+      final configPath =
+          data['config'] ?? 'config/external/portainer_ci_cd.yaml';
       final serviceId = data['service_id'];
       final serviceName = data['service_name'];
       final endpointId = data['endpoint_id'];

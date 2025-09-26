@@ -6,7 +6,8 @@ import 'dart:io';
 void main() async {
   try {
     print('Testing YAML parsing...');
-    final content = await File('config/ssh_restart.yaml').readAsString();
+    final content =
+        await File('config/external/ssh_restart.yaml').readAsString();
     print('File read successfully, content length: ${content.length}');
 
     final yaml = loadYaml(content);

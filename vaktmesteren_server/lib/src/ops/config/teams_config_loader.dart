@@ -8,7 +8,7 @@ class TeamsConfigLoader {
   /// Load Teams notification configuration from YAML file
   static Future<TeamsConfig> loadConfig(
     Session session, {
-    String configPath = 'config/teams_notifications.yaml',
+    String configPath = 'config/external/teams_notifications.yaml',
   }) async {
     try {
       session.log('Loading Teams notification config from: $configPath',
@@ -155,7 +155,7 @@ class TeamsConfigLoader {
   /// Load and merge environment-specific overrides
   static Future<TeamsConfig> loadConfigWithOverrides(
     Session session, {
-    String baseConfigPath = 'config/teams_notifications.yaml',
+    String baseConfigPath = 'config/external/teams_notifications.yaml',
     String? environmentConfigPath,
   }) async {
     // Load base configuration
@@ -198,7 +198,7 @@ class TeamsConfigLoader {
   /// Reload configuration at runtime
   static Future<TeamsConfig> reloadConfig(
     Session session, {
-    String configPath = 'config/teams_notifications.yaml',
+    String configPath = 'config/external/teams_notifications.yaml',
   }) async {
     session.log('Reloading Teams notification configuration...',
         level: LogLevel.info);

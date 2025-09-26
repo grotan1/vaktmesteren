@@ -8,7 +8,7 @@ class SshRestartConfigLoader {
   /// Load SSH restart configuration from YAML file
   static Future<SshRestartConfig> loadConfig(
     Session session, {
-    String configPath = 'config/ssh_restart.yaml',
+    String configPath = 'config/external/ssh_restart.yaml',
   }) async {
     try {
       session.log('Loading SSH restart config from: $configPath',
@@ -56,7 +56,7 @@ class SshRestartConfigLoader {
   static Future<SshRestartConfig> loadEnvironmentConfig(
     Session session,
     String environment, {
-    String configDir = 'config',
+    String configDir = 'config/external',
   }) async {
     final configPath = '$configDir/ssh_restart_$environment.yaml';
 
